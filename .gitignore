@@ -32,3 +32,19 @@ de421.bsp
 patch_*.py
 test_iss.py
 test_version.py
+
+# Configs personnelles MAP-CI (ne JAMAIS committer)
+.mapci_alarm.json
+.mapci_telegram.json
+.mapci_discord.json
+.mapci_sms.json
+.mapci_ntfy.txt
+.mapci_favoris.json
+.mapci_historique.json
+.mapci_observations.json
+.mapci_positions.json
+.mapci_achievements.json
+.mapci_geo_cache.json
+.mapci_alarm_log.json
+.mapci_tle.txt
+.mapci_tle_multi.txt
