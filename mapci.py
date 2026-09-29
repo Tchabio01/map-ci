@@ -1,1136 +1,1482 @@
-#!/data/data/com.termux/files/usr/bin/python
-# ============================================================
-#   MAP-CI V6 ULTIMATE - Cartographie GPS EXIF Live
-#   Toutes fonctions : voyage, meteo, photo, espace, jeux
-# ============================================================
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+MAP-CI V6.2 — Cartographie • GPS • EXIF • Live
+Alarme ISS + Géocodeur Photon-only + Cache local
+"""
 
-import os, sys, json, subprocess, math, random, time, shutil
-import socket, select, tty, termios
+import os
+import sys
+import json
+import math
+import time
+import random
+import shutil
+import threading
+try:
+    import iss_alerts
+except Exception:
+    iss_alerts = None
+try:
+    import iss_visibility
+except Exception:
+    iss_visibility = None
+try:
+    import iss_notify
+except Exception:
+    iss_notify = None
+try:
+    import iss_multisat
+except Exception:
+    iss_multisat = None
+try:
+    import iss_observe
+except Exception:
+    iss_observe = None
+try:
+    import iss_multipos
+except Exception:
+    iss_multipos = None
+from datetime import datetime
 from pathlib import Path
-from datetime import datetime, date
 
+# ============================================================
+# DÉPENDANCES
+# ============================================================
 try:
     import requests
 except ImportError:
-    print("pip install requests"); sys.exit(1)
+    print("❌ pip install requests")
+    sys.exit(1)
 
 try:
-    from rich.console import Console
-    console = Console()
-    HAS_RICH = True
+    from geopy.distance import geodesic
+    GEOPY_OK = True
 except ImportError:
-    HAS_RICH = False
-    class Console:
-        def print(self, *a, **k): print(*a)
-    console = Console()
+    GEOPY_OK = False
 
-# --- Chemins ---
-HOME = Path.home()
-DIR = HOME / ".mapci"
-DIR.mkdir(exist_ok=True)
-FAV = DIR / "favoris.txt"; FAV.touch(exist_ok=True)
-LOG = DIR / "history.log"; LOG.touch(exist_ok=True)
-CFG = DIR / "config.json"
-if not CFG.exists():
-    CFG.write_text('{"units":"metric","lang":"fr"}')
+try:
+    from PIL import Image
+    from PIL.ExifTags import GPSTAGS
+    PIL_OK = True
+except ImportError:
+    PIL_OK = False
 
-def load_cfg():
-    try: return json.loads(CFG.read_text())
-    except: return {"units":"metric","lang":"fr"}
-def save_cfg(c): CFG.write_text(json.dumps(c, indent=2))
-def log(msg):
-    try:
-        with LOG.open("a") as f:
-            f.write(f"[{datetime.now():%F %T}] {msg}\n")
-    except: pass
-
-# --- Banniere ---
-BANNER = (
-    "╔══════════════════════════════════════╗\n"
-    "║        🗺️  M A P - C I   V 6          ║\n"
-    "║   ────────────────────────────────    ║\n"
-    "║   Cartographie • GPS • EXIF • Live    ║\n"
-    "╚══════════════════════════════════════╝"
-)
-
-def clear_screen():
-    print("\033[2J\033[H", end="")
-
-def banner():
-    clear_screen()
-    if HAS_RICH:
-        console.print(BANNER, style="bold cyan")
-    else:
-        print(BANNER)
-
-def pause():
-    try: input("\n⏎  Appuyez sur Entrée...")
-    except: pass
-
-def ask(p):
-    try: return input(p).strip()
-    except: return ""
-
-# --- Reseau ---
-UA = {"User-Agent": "MapCI/6.0 (Termux)"}
-
-def safe_get(url, params=None, timeout=10, headers=None):
-    try:
-        r = requests.get(url, params=params, headers=headers or UA, timeout=timeout)
-        r.raise_for_status()
-        return r.json()
-    except Exception as e:
-        return None
-
-# --- Ocean ---
-def ocean_name(lat, lon):
-    try:
-        lat = float(lat); lon = float(lon)
-    except: return "Zone inconnue"
-    if lat <= -60: return "Ocean Austral"
-    if lat >= 60:  return "Ocean Arctique"
-    if -70 < lon < 20:   return "Ocean Atlantique"
-    if 20 < lon < 100:   return "Ocean Indien"
-    if 100 < lon < 180:  return "Ocean Pacifique"
-    if -180 < lon < -70: return "Ocean Pacifique"
-    return "Zone maritime"
-
-def reverse_info(lat, lon):
-    d = safe_get("https://nominatim.openstreetmap.org/reverse",
-                 params={"lat": lat, "lon": lon, "format": "json",
-                         "zoom": 10, "accept-language": "fr"})
-    if d and d.get("display_name"):
-        name = d["display_name"]
-        print("  🌍 " + name[:60])
-        return name
-    print(f"  🌊 {ocean_name(lat, lon)} (pas d'adresse)")
-    print(f"  📍 {lat} , {lon}")
-    return None
+try:
+    import qrcode
+    QRCODE_OK = True
+except ImportError:
+    QRCODE_OK = False
 
 # ============================================================
-#   CARTE (choix navigateur / Google / MapSCII)
+# CONFIGURATION
 # ============================================================
-def mapterra(lat=None, lon=None):
-    if lat is None: lat = ask("Latitude : ")
-    if lon is None: lon = ask("Longitude : ")
-    if not lat or not lon: return
+APP_NAME = "MAP-CI"
+APP_VERSION = "6.2"
+USER_AGENT = f"MAP-CI/{APP_VERSION} (+https://github.com/mapci)"
 
-    clear_screen()
-    print(f"🗺️  Carte : {lat} , {lon}\n")
-    print("  1  Navigateur (OSM)")
-    print("  2  Google Maps")
-    print("  3  MapSCII (ASCII)")
-    print("  4  Copier coords")
-    print("  Entree Retour")
-    a = ask("  Choix : ")
-
-    if a == "1":
-        url = f"https://www.openstreetmap.org/?mlat={lat}&mlon={lon}#map=13/{lat}/{lon}"
-        try:
-            subprocess.run(["termux-open-url", url], timeout=10)
-            print("\n✔ Ouvert dans le navigateur")
-        except Exception as e:
-            print(f"\n⚠  {e}\n  URL : {url}")
-    elif a == "2":
-        url = f"https://www.google.com/maps/search/?api=1&query={lat},{lon}"
-        try:
-            subprocess.run(["termux-open-url", url], timeout=10)
-            print("\n✔ Ouvert dans Google Maps")
-        except Exception as e:
-            print(f"\n⚠  {e}\n  URL : {url}")
-    elif a == "3":
-        mapterra_terminal(lat, lon); return
-    elif a == "4":
-        print(f"\n  📋 {lat},{lon}")
-    else:
-        return
-    pause()
-
-def mapterra_terminal(lat, lon):
-    clear_screen()
-    print(f"🗺️  MapSCII → {lat},{lon}")
-    print("   Fleches=bouger | a/z=zoom | q=quitter")
-    time.sleep(2)
-
-    IAC, DONT, DO, WONT, WILL = 255, 254, 253, 252, 251
-    SB, SE, NAWS = 250, 240, 31
-
-    try:
-        s = socket.create_connection(("mapscii.me", 23), timeout=15)
-    except Exception as e:
-        print("❌ Connexion :", e); pause(); return
-
-    def strip_iac(data):
-        out = bytearray(); i = 0; n = len(data)
-        while i < n:
-            b = data[i]
-            if b == IAC:
-                if i+1 >= n: break
-                cmd = data[i+1]
-                if cmd in (DO, DONT, WILL, WONT):
-                    if i+2 >= n: break
-                    opt = data[i+2]
-                    if cmd == DO:
-                        try: s.sendall(bytes([IAC, WONT, opt]))
-                        except: pass
-                    elif cmd == WILL:
-                        try: s.sendall(bytes([IAC, DONT, opt]))
-                        except: pass
-                    i += 3
-                elif cmd == SB:
-                    j = i + 2
-                    while j < n-1:
-                        if data[j] == IAC and data[j+1] == SE: break
-                        j += 1
-                    i = j + 2
-                elif cmd == IAC:
-                    out.append(IAC); i += 2
-                else: i += 2
-            else:
-                out.append(b); i += 1
-        return bytes(out)
-
-    cols, rows = 80, 24
-    naws = bytes([IAC, SB, NAWS,
-                  (cols>>8)&0xFF, cols&0xFF,
-                  (rows>>8)&0xFF, rows&0xFF, IAC, SE])
-    try: s.sendall(naws)
-    except: pass
-    try: s.sendall(f"g {lat} {lon}\n".encode())
-    except: pass
-
-    try: old_term = termios.tcgetattr(sys.stdin)
-    except: old_term = None
-    try: tty.setraw(sys.stdin.fileno())
-    except: pass
-    s.settimeout(None)
-
-    try:
-        while True:
-            r, _, _ = select.select([s, sys.stdin], [], [])
-            if s in r:
-                data = s.recv(65536)
-                if not data: break
-                clean = strip_iac(data)
-                if clean:
-                    try:
-                        sys.stdout.buffer.write(clean)
-                        sys.stdout.buffer.flush()
-                    except: pass
-            if sys.stdin in r:
-                ch = sys.stdin.read(1)
-                if ch in ("q", "\x03", "\x04"): break
-                try: s.sendall(ch.encode())
-                except: break
-    except KeyboardInterrupt: pass
-    except Exception as e: print("\n⚠ ", e)
-    finally:
-        if old_term:
-            try: termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_term)
-            except: pass
-        try: s.close()
-        except: pass
-    clear_screen(); pause()
+FAVORIS_FILE      = Path.home() / ".mapci_favoris.json"
+HISTORIQUE_FILE   = Path.home() / ".mapci_historique.json"
+ALARM_CONFIG_FILE = Path.home() / ".mapci_alarm.json"
+ALARM_LOG_FILE    = Path.home() / ".mapci_alarm_log.json"
+GEO_CACHE_FILE    = Path.home() / ".mapci_geo_cache.json"
 
 # ============================================================
-#   1. RECHERCHE VILLE
+# MINI-DICTIONNAIRE LOCAL (zéro réseau)
 # ============================================================
-def search_city():
-    banner()
-    q = ask("🔎 Nom de la ville : ")
-    if not q: return
-    log(f"SEARCH:{q}")
-    print("⏳ Recherche...")
-    data = safe_get("https://nominatim.openstreetmap.org/search",
-                    params={"q": q, "format": "json", "limit": 5})
-    if not data:
-        pause(); return
-    for i, r in enumerate(data, 1):
-        print(f"  [{i}] {r['display_name'][:48]}")
-        print(f"      📍 {r['lat'][:8]} , {r['lon'][:8]}")
-    print("\n  o) 🗺️  Carte   m) 🌦️  Meteo   M) 📅 7j")
-    print("  g) 📸 Golden  f) 📌 Favori   t) 🌐 Fuseau")
-    a = ask("  Action : ").lower()
-    if a in ("o","m","m","g","f","t"):
-        try:
-            idx = int(ask("  Numero : ")) - 1
-            r = data[idx]
-        except: return
-        city_name = r["display_name"].split(",")[0]
-        if a == "o": mapterra(r["lat"], r["lon"])
-        elif a == "m": meteo(city_name)
-        elif a == "g": golden(r["lat"], r["lon"])
-        elif a == "t": fuseaux(city_name)
-        elif a == "f":
-            with FAV.open("a") as f:
-                f.write(f"{r['display_name']}|{r['lat']}|{r['lon']}\n")
-            print("✔ Ajoute aux favoris")
-    pause()
-
-# ============================================================
-#   3. IMAGE GPS EXIF (avec carte de toutes les photos)
-# ============================================================
-def exif_img():
-    banner()
-    if not shutil.which("exiftool"):
-        print("⚠  pkg install exiftool"); pause(); return
-    p = Path(ask("📷 Image ou dossier : ")).expanduser()
-    if not p.exists():
-        print("Introuvable :", p); pause(); return
-
-    if p.is_dir():
-        # Scanner toutes les images
-        imgs = []
-        for ext in ("*.jpg","*.jpeg","*.png","*.heic","*.tif","*.webp"):
-            imgs.extend(p.rglob(ext))
-        if not imgs:
-            print("Aucune image."); pause(); return
-
-        # Recupere les coordonnees de chaque image
-        geo = []
-        print(f"⏳ Analyse de {len(imgs)} images...\n")
-        for im in imgs:
-            lat = subprocess.run(["exiftool","-c","%.6f","-GPSLatitude","-s3",str(im)],
-                                 capture_output=True, text=True).stdout.strip()
-            lon = subprocess.run(["exiftool","-c","%.6f","-GPSLongitude","-s3",str(im)],
-                                 capture_output=True, text=True).stdout.strip()
-            latr = subprocess.run(["exiftool","-GPSLatitudeRef","-s3",str(im)],
-                                  capture_output=True, text=True).stdout.strip()
-            lonr = subprocess.run(["exiftool","-GPSLongitudeRef","-s3",str(im)],
-                                  capture_output=True, text=True).stdout.strip()
-            if lat and lon:
-                if latr == "S": lat = "-" + lat.lstrip("-")
-                if lonr == "W": lon = "-" + lon.lstrip("-")
-                geo.append({"file": im, "lat": lat, "lon": lon})
-
-        if not geo:
-            print("Aucune image avec donnees GPS."); pause(); return
-
-        print(f"📍 {len(geo)}/{len(imgs)} photo(s) geolocalisee(s) :\n")
-        for i, g in enumerate(geo, 1):
-            print(f"  [{i}] {g['file'].name[:35]}")
-            print(f"      {g['lat']} , {g['lon']}")
-
-        print("\n  v) Voir photo sur carte")
-        print("  a) Afficher TOUTES sur une carte")
-        print("  c) Copier toutes les coords")
-        print("  e) Export GPX")
-        print("  Entree) Retour")
-        a = ask("  Action : ").lower()
-
-        if a == "v":
-            try:
-                n = int(ask("  Numero : ")) - 1
-                mapterra(geo[n]["lat"], geo[n]["lon"])
-            except: pause()
-        elif a == "a":
-            # Genere un lien OSM avec tous les marqueurs (via umap ou bbox)
-            lats = [float(g["lat"]) for g in geo]
-            lons = [float(g["lon"]) for g in geo]
-            lat_min, lat_max = min(lats), max(lats)
-            lon_min, lon_max = min(lons), max(lons)
-            url = (f"https://www.openstreetmap.org/"
-                   f"?bbox={lon_min},{lat_min},{lon_max},{lat_max}")
-            print(f"\n  🌍 BBox : {lat_min:.3f},{lon_min:.3f} → {lat_max:.3f},{lon_max:.3f}")
-            print(f"  📋 {len(geo)} points")
-            print(f"  URL : {url}")
-            if ask("  Ouvrir ? (o/n) : ").lower() == "o":
-                try: subprocess.run(["termux-open-url", url], timeout=10)
-                except: pass
-            # Genere aussi un fichier KML
-            kml = DIR / "photos.kml"
-            with kml.open("w") as f:
-                f.write('<?xml version="1.0" encoding="UTF-8"?>\n')
-                f.write('<kml xmlns="http://www.opengis.net/kml/2.2">\n<Document>\n')
-                for g in geo:
-                    f.write(f'<Placemark><name>{g["file"].name}</name>\n')
-                    f.write(f'<Point><coordinates>{g["lon"]},{g["lat"]},0</coordinates></Point>\n')
-                    f.write('</Placemark>\n')
-                f.write('</Document></kml>\n')
-            print(f"  ✔ KML sauvegarde : {kml}")
-            pause()
-        elif a == "c":
-            print()
-            for g in geo:
-                print(f"  {g['file'].name[:30]} : {g['lat']},{g['lon']}")
-            pause()
-        elif a == "e":
-            gpx = DIR / "photos.gpx"
-            with gpx.open("w") as f:
-                f.write('<?xml version="1.0" encoding="UTF-8"?>\n')
-                f.write('<gpx version="1.1" creator="MapCI">\n')
-                for g in geo:
-                    f.write(f'<wpt lat="{g["lat"]}" lon="{g["lon"]}">\n')
-                    f.write(f'<name>{g["file"].name}</name>\n</wpt>\n')
-                f.write('</gpx>\n')
-            print(f"\n  ✔ GPX sauvegarde : {gpx}")
-            print(f"  → Importable dans Google Earth, GPS, etc.")
-            pause()
-        return
-
-    # Image unique
-    out = subprocess.run(["exiftool", str(p)], capture_output=True, text=True).stdout
-    for line in out.splitlines():
-        if any(k in line for k in ("GPS","Date","Model","Make","ISO","Exposure","Focal")):
-            print("  " + line[:60])
-    lat = subprocess.run(["exiftool","-c","%.6f","-GPSLatitude","-s3",str(p)],
-                         capture_output=True, text=True).stdout.strip()
-    lon = subprocess.run(["exiftool","-c","%.6f","-GPSLongitude","-s3",str(p)],
-                         capture_output=True, text=True).stdout.strip()
-    latr = subprocess.run(["exiftool","-GPSLatitudeRef","-s3",str(p)],
-                          capture_output=True, text=True).stdout.strip()
-    lonr = subprocess.run(["exiftool","-GPSLongitudeRef","-s3",str(p)],
-                          capture_output=True, text=True).stdout.strip()
-    if lat and lon:
-        if latr == "S": lat = "-" + lat.lstrip("-")
-        if lonr == "W": lon = "-" + lon.lstrip("-")
-        print(f"\n📍 {lat} , {lon}")
-        print("  o) 🗺️  Carte   m) 🌦️  Meteo")
-        print("  g) 📸 Golden  d) 🔢 DMS")
-        print("  i) ℹ️  Info    h) 🏔️  Altitude")
-        print("  r) 🛣️  Itineraire ici")
-        print("  x) 🗑️  Suppr EXIF")
-        a = ask("  Action : ").lower()
-        if a == "o": mapterra(lat, lon)
-        elif a == "m": meteo(f"{lat},{lon}")
-        elif a == "g": golden(lat, lon)
-        elif a == "d":
-            try: to_dms(float(lat), float(lon))
-            except: pass
-        elif a == "i": reverse_info(lat, lon); pause()
-        elif a == "h": altitude(lat, lon)
-        elif a == "r": itineraire(lat, lon)
-        elif a == "x":
-            subprocess.run(["exiftool","-all=","-overwrite_original",str(p)])
-            print("✔ EXIF supprimes")
-    else:
-        print("⚠  Pas de donnees GPS.")
-    pause()
-
-def to_dms(lat, lon):
-    def fmt(v, pos, neg):
-        d = int(abs(v)); m = (abs(v)-d)*60; mi = int(m); s = (m-mi)*60
-        return f"{d}°{mi}'{s:.2f}\" {pos if v>=0 else neg}"
-    print(f"  Lat : {fmt(lat,'N','S')}")
-    print(f"  Lon : {fmt(lon,'E','W')}")
-
-# ============================================================
-#   4. METEO (actuelle + 7 jours + AQI)
-# ============================================================
-def meteo(city=None):
-    if not city:
-        city = ask("🌦️  Ville : ")
-    if not city: return
-    banner()
-    try:
-        subprocess.run(["curl","-s",
-                        "-H","Accept-Language: fr",
-                        "-A","curl/7.88.1",
-                        f"https://wttr.in/{city}?lang=fr&format=v2"])
-    except Exception as e:
-        print("Erreur :", e)
-    pause()
-
-def meteo_7j(city=None):
-    if not city:
-        city = ask("📅 Ville (7 jours) : ")
-    if not city: return
-    banner()
-    try:
-        subprocess.run(["curl","-s",
-                        "-H","Accept-Language: fr",
-                        "-A","curl/7.88.1",
-                        f"https://wttr.in/{city}?lang=fr&format=v2&compact=0"])
-    except Exception as e:
-        print("Erreur :", e)
-    pause()
-
-def air_quality(city=None):
-    if not city:
-        city = ask("💨 Ville : ")
-    if not city: return
-    banner()
-    coords = safe_get("https://nominatim.openstreetmap.org/search",
-                      params={"q": city, "format": "json", "limit": 1})
-    if not coords:
-        print("Ville introuvable"); pause(); return
-    lat, lon = coords[0]["lat"], coords[0]["lon"]
-    d = safe_get("https://air-quality-api.open-meteo.com/v1/air-quality",
-                 params={"latitude": lat, "longitude": lon,
-                         "current": "pm10,pm2_5,european_aqi,us_aqi"})
-    if not d:
-        print("Erreur API"); pause(); return
-    c = d.get("current", {})
-    aqi = c.get("european_aqi", 0)
-    if aqi <= 20: note = "🟢 Excellent"
-    elif aqi <= 40: note = "🟡 Bon"
-    elif aqi <= 60: note = "🟠 Moyen"
-    elif aqi <= 80: note = "🔴 Mauvais"
-    else: note = "🟣 Tres mauvais"
-    print(f"  💨 Qualite de l'air : {city}\n")
-    print(f"  AQI Europeen : {aqi}  {note}")
-    print(f"  AQI US       : {c.get('us_aqi')}")
-    print(f"  PM2.5        : {c.get('pm2_5')} µg/m³")
-    print(f"  PM10         : {c.get('pm10')} µg/m³")
-    pause()
-
-# ============================================================
-#   5. IP
-# ============================================================
-def my_ip():
-    banner()
-    d = safe_get("https://ipinfo.io/json")
-    if not d: pause(); return
-    for k, v in [("🌍 Ville", d.get("city")), ("🏳️  Region", d.get("region")),
-                 ("🗺️  Pays", d.get("country")), ("📍 Coords", d.get("loc")),
-                 ("📡 FAI", d.get("org")), ("🕒 TZ", d.get("timezone"))]:
-        print(f"  {k:12}: {v}")
-    print("\n  o) 🗺️  Carte   m) 🌦️  Meteo   f) 📌 Favori")
-    a = ask("  Action : ").lower()
-    loc = d.get("loc", "0,0")
-    lat, lon = (loc.split(",") + ["0"])[:2]
-    if a == "o": mapterra(lat, lon)
-    elif a == "m": meteo(d.get("city"))
-    elif a == "f":
-        with FAV.open("a") as f:
-            f.write(f"{d.get('city')}, {d.get('country')}|{lat}|{lon}\n")
-        print("✔ Ajoute")
-    pause()
-
-# ============================================================
-#   6. DISTANCE + ITINERAIRE
-# ============================================================
-def haversine(la1, lo1, la2, lo2):
-    R = 6371
-    r1, r2 = math.radians(la1), math.radians(la2)
-    dr = math.radians(la2-la1); dl = math.radians(lo2-lo1)
-    a = math.sin(dr/2)**2 + math.cos(r1)*math.cos(r2)*math.sin(dl/2)**2
-    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
-
-def get_coords(inp):
-    inp = inp.strip()
-    if "," in inp:
-        try:
-            a, b = inp.split(","); return float(a), float(b)
-        except: pass
-    d = safe_get("https://nominatim.openstreetmap.org/search",
-                 params={"q": inp, "format": "json", "limit": 1})
-    if d:
-        return float(d[0]["lat"]), float(d[0]["lon"])
-    return None, None
-
-def distance():
-    banner()
-    a = ask("🧭 Lieu 1 : ")
-    b = ask("🧭 Lieu 2 : ")
-    la1, lo1 = get_coords(a); la2, lo2 = get_coords(b)
-    if None in (la1, lo1, la2, lo2):
-        print("❌ Introuvables"); pause(); return
-    d = haversine(la1, lo1, la2, lo2)
-    # Cap (direction)
-    dlon = math.radians(lo2 - lo1)
-    y = math.sin(dlon) * math.cos(math.radians(la2))
-    x = (math.cos(math.radians(la1)) * math.sin(math.radians(la2)) -
-         math.sin(math.radians(la1)) * math.cos(math.radians(la2)) * math.cos(dlon))
-    brg = (math.degrees(math.atan2(y, x)) + 360) % 360
-    dirs = ["N","NE","E","SE","S","SO","O","NO","N"]
-    direction = dirs[int((brg+22.5) % 360 // 45)]
-
-    print(f"\n📍 {a} → {b}")
-    print(f"   📏 Distance : {d:.2f} km")
-    print(f"   ✈️  Vol ~ {d/800:.1f} h")
-    print(f"   🧭 Direction : {direction} ({brg:.0f}°)")
-    print("  o) Carte   r) Itineraire voiture")
-    c = ask("  Action : ").lower()
-    if c == "o": mapterra(str((la1+la2)/2), str((lo1+lo2)/2))
-    elif c == "r": osrm_route(la1, lo1, la2, lo2)
-    pause()
-
-def osrm_route(la1, lo1, la2, lo2):
-    print("\n⏳ Calcul itineraire...")
-    d = safe_get(f"https://router.project-osrm.org/route/v1/driving/"
-                 f"{lo1},{la1};{lo2},{la2}",
-                 params={"overview": "false"})
-    if not d or d.get("code") != "Ok":
-        print("❌ Erreur itineraire"); pause(); return
-    r = d["routes"][0]
-    km = r["distance"] / 1000
-    h = r["duration"] / 3600
-    print(f"  🛣️  Itineraire voiture")
-    print(f"  📏 Distance : {km:.1f} km")
-    print(f"  ⏱️  Duree    : {int(h)}h {int((h%1)*60)}min")
-    pause()
-
-def itineraire(lat=None, lon=None):
-    if lat is None:
-        lat = ask("Latitude arrivee : ")
-        lon = ask("Longitude arrivee : ")
-    if not lat or not lon: return
-    print("\n📍 Point de depart :")
-    d = safe_get("https://ipinfo.io/json")
-    if d:
-        loc = d.get("loc","0,0")
-        slat, slon = (loc.split(",")+["0"])[:2]
-        print(f"  {d.get('city')} ({slat},{slon})")
-        osrm_route(float(slat), float(slon), float(lat), float(lon))
-    else:
-        print("Position introuvable"); pause()
-
-# ============================================================
-#   7. ISS
-# ============================================================
-def iss():
-    banner()
-    d = safe_get("http://api.open-notify.org/iss-now.json")
-    if not d: pause(); return
-    lat = d["iss_position"]["latitude"]; lon = d["iss_position"]["longitude"]
-    print(f"  🛰️  Position de l'ISS\n")
-    print(f"  🌍 Lat : {lat}")
-    print(f"  🌍 Lon : {lon}")
-    print(f"  🕒 {datetime.now():%c}\n")
-    print("  o  Carte  i  Info  r  Suivi 1min")
-    print("  p  Passages visibles 1h")
-    a = ask("  Action : ").lower()
-    if a == "o": mapterra(lat, lon)
-    elif a == "i":
-        print("\n  ⏳ Recherche...")
-        reverse_info(lat, lon); pause()
-    elif a == "r":
-        for i in range(12):
-            clear_screen()
-            print(f"🛰️  ISS — {i+1}/12 ({5*(i+1)}s)\n")
-            d = safe_get("http://api.open-notify.org/iss-now.json")
-            if d:
-                print(f"  Lat : {d['iss_position']['latitude']}")
-                print(f"  Lon : {d['iss_position']['longitude']}")
-            time.sleep(5)
-        pause()
-    elif a == "p":
-        passe_iss()
-    else:
-        pause()
-
-def passe_iss():
-    banner()
-    print("  🛰️  Passages visibles de l'ISS\n")
-    # Utilise ta position (via IP)
-    d = safe_get("https://ipinfo.io/json")
-    if not d:
-        print("Position introuvable"); pause(); return
-    loc = d.get("loc","0,0")
-    lat, lon = (loc.split(",")+["0"])[:2]
-    print(f"  Position : {d.get('city')} ({lat},{lon})\n")
-    # API N2YO a besoin d'une cle API, on informe l'utilisateur
-    print("  ℹ️  Pour les passages visibles précis :")
-    print("  → https://www.n2yo.com/passes/?s=25544")
-    print("  (site web, entre tes coordonnees)")
-    print()
-    print(f"  Ou : https://spotthestation.nasa.gov/")
-    pause()
-
-# ============================================================
-#   8. FAVORIS
-# ============================================================
-def favoris():
-    banner()
-    lines = FAV.read_text().strip().splitlines()
-    if not lines:
-        print("  📌 (vide)"); pause(); return
-    print("  📌 Mes favoris :\n")
-    for i, l in enumerate(lines, 1):
-        print(f"  [{i}] {l.split('|')[0][:48]}")
-    print("\n  s) Suppr  v) Voir carte  d) Distance a un favori")
-    print("  r) Itineraire vers favori  Entree) Retour")
-    a = ask("  Choix : ").lower()
-    if a == "s":
-        try:
-            n = int(ask("  Numero : ")) - 1
-            lines.pop(n); FAV.write_text("\n".join(lines)+"\n")
-            print("✔ Supprime")
-        except: pass
-    elif a == "v":
-        try:
-            n = int(ask("  Numero : ")) - 1
-            _, lat, lon = lines[n].split("|")
-            mapterra(lat, lon)
-        except: pass
-    elif a == "r":
-        try:
-            n = int(ask("  Numero : ")) - 1
-            _, lat, lon = lines[n].split("|")
-            itineraire(lat, lon)
-        except: pass
-    elif a == "d":
-        try:
-            n = int(ask("  Numero : ")) - 1
-            _, lat, lon = lines[n].split("|")
-            d = safe_get("https://ipinfo.io/json")
-            if d:
-                mloc = d.get("loc","0,0")
-                mlat, mlon = (mloc.split(",")+["0"])[:2]
-                dist = haversine(float(mlat), float(mlon), float(lat), float(lon))
-                print(f"\n  📏 Distance : {dist:.2f} km")
-                pause()
-        except: pass
-    else: pause()
-    if a not in ("s","v","d","r"): pass
-    elif a != "v" and a != "r" and a != "d":
-        pause()
-
-# ============================================================
-#   9. GOLDEN HOUR
-# ============================================================
-def golden(lat=None, lon=None):
-    if lat is None: lat = ask("Latitude : ")
-    if lon is None: lon = ask("Longitude : ")
-    if not lat or not lon: return
-    banner()
-    d = safe_get("https://api.sunrise-sunset.org/json",
-                 params={"lat": lat, "lng": lon, "formatted": 0})
-    if not d or d.get("status") != "OK":
-        print("Erreur API"); pause(); return
-    r = d["results"]
-    def conv(iso):
-        try:
-            return datetime.fromisoformat(iso.replace("Z","+00:00")).astimezone().strftime("%H:%M")
-        except: return iso
-    print("  📸 Golden / Blue hour\n")
-    print("  🌅 Aube        :", conv(r["civil_twilight_begin"]))
-    print("  🌄 Lever       :", conv(r["sunrise"]))
-    print("  ☀️  Midi        :", conv(r["solar_noon"]))
-    print("  🌇 Coucher     :", conv(r["sunset"]))
-    print("  🌆 Crepuscule  :", conv(r["civil_twilight_end"]))
-    print("  📏 Duree jour  :", r["day_length"], "s")
-    pause()
-
-# ============================================================
-#   10. SEISMES
-# ============================================================
-def seismes():
-    banner()
-    print("  🚨 Seismes dernieres 24h (M>2.5)\n")
-    d = safe_get("https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/2.5_day.geojson")
-    if not d: pause(); return
-    for f in d["features"][:20]:
-        p = f["properties"]
-        t = datetime.fromtimestamp(p["time"]/1000).strftime("%H:%M")
-        print(f"  M{p['mag']} {p['place'][:38]} [{t}]")
-    pause()
-
-# ============================================================
-#   11. COORDS ALEATOIRES
-# ============================================================
-def random_coords():
-    banner()
-    lat = random.uniform(-60, 60); lon = random.uniform(-170, 170)
-    print(f"  🎲 {lat:.4f} , {lon:.4f}")
-    info = safe_get("https://nominatim.openstreetmap.org/reverse",
-                    params={"lat": lat, "lon": lon, "format": "json"})
-    if info and info.get("display_name"):
-        print("  🌍 " + info["display_name"][:50])
-    else:
-        print("  🌊 " + ocean_name(lat, lon))
-    if ask("  o) Carte : ").lower() == "o":
-        mapterra(str(lat), str(lon))
-    pause()
-
-# ============================================================
-#   12. JEU DEVINE VILLE
-# ============================================================
-def jeu():
-    banner()
-    lat = random.uniform(-60, 60); lon = random.uniform(-170, 170)
-    print("  🎮 Devine la ville !\n")
-    print(f"  🎲 Coordonnees : {lat:.4f} , {lon:.4f}")
-    ask("  Ta reponse : ")
-    info = safe_get("https://nominatim.openstreetmap.org/reverse",
-                    params={"lat": lat, "lon": lon, "format": "json"})
-    if info and info.get("display_name"):
-        rep = info["display_name"][:50]
-    else:
-        rep = ocean_name(lat, lon)
-    print("  ✔ Reponse : " + rep)
-    pause()
-
-# ============================================================
-#   13. HISTORIQUE
-# ============================================================
-def history_menu():
-    banner()
-    print("  📝 Historique (30 dernieres)\n")
-    for l in LOG.read_text().splitlines()[-30:]:
-        print("  " + l[:50])
-    pause()
-
-# ============================================================
-#   14. PARAMETRES
-# ============================================================
-def config():
-    banner()
-    c = load_cfg()
-    print("  ⚙️  Parametres\n")
-    print("  Config :", c)
-    print()
-    print("  1) Units  2) Vider historique")
-    print("  3) Vider favoris  4) Retour")
-    a = ask("  Choix : ")
-    if a == "1":
-        c["units"] = ask("metric/imperial : ")
-        save_cfg(c); print("✔ Enregistre")
-    elif a == "2": LOG.write_text(""); print("✔ Historique vide")
-    elif a == "3": FAV.write_text(""); print("✔ Favoris vides")
-    pause()
-
-# ============================================================
-#   15. FUSEAUX HORAIRES
-# ============================================================
-def fuseaux(ville=None):
-    banner()
-    if not ville:
-        ville = ask("🌐 Ville : ")
-    if not ville: return
-    coords = safe_get("https://nominatim.openstreetmap.org/search",
-                      params={"q": ville, "format": "json", "limit": 1})
-    if not coords:
-        print("Ville introuvable"); pause(); return
-    lat, lon = coords[0]["lat"], coords[0]["lon"]
-    tz = safe_get("https://timeapi.io/api/TimeZone/coordinate",
-                  params={"latitude": lat, "longitude": lon})
-    if tz:
-        print(f"\n  🌐 Fuseau : {ville}")
-        print(f"  📍 {tz.get('timeZone', '?')}")
-        local = tz.get("currentLocalTime", "")
-        if local:
-            print(f"  🕒 Heure locale : {local[:19]}")
-        # Heure locale de l'utilisateur
-        print(f"  🕒 Chez toi     : {datetime.now():%H:%M}")
-    pause()
-
-# ============================================================
-#   16. ALTITUDE
-# ============================================================
-def altitude(lat=None, lon=None):
-    if lat is None:
-        lat = ask("Latitude : ")
-        lon = ask("Longitude : ")
-    if not lat or not lon: return
-    banner()
-    print("⏳ Recherche altitude...")
-    d = safe_get("https://api.open-elevation.com/api/v1/lookup",
-                 params={"locations": f"{lat},{lon}"})
-    if d and d.get("results"):
-        alt = d["results"][0]["elevation"]
-        print(f"\n  🏔️  Altitude : {alt} m")
-        if alt < 0: note = "🌊 Sous le niveau de la mer"
-        elif alt < 200: note = "🏖️  Plaine côtière"
-        elif alt < 800: note = "🌾 Collines / plateau"
-        elif alt < 2000: note = "⛰️  Montagne"
-        elif alt < 4000: note = "🏔️  Haute montagne"
-        else: note = "🗻 Everest niveau !"
-        print(f"  {note}")
-    else:
-        print("❌ Erreur API")
-    pause()
-
-# ============================================================
-#   17. POINTS D'INTERET PROCHES
-# ============================================================
-def poi_proches(lat=None, lon=None):
-    if lat is None:
-        d = safe_get("https://ipinfo.io/json")
-        if not d:
-            lat = ask("Latitude : "); lon = ask("Longitude : ")
-        else:
-            loc = d.get("loc","0,0")
-            lat, lon = (loc.split(",")+["0"])[:2]
-            print(f"  Position : {d.get('city')}")
-    banner()
-    print("  🏛️  Points d'interet proches\n")
-    print("  1 Restaurants  2 Bars  3 Pharmacies")
-    print("  4 Hopitaux     5 Banques  6 Supermarches")
-    c = ask("  Choix : ")
-    tags = {
-        "1": 'amenity=restaurant', "2": 'amenity=bar',
-        "3": 'amenity=pharmacy',   "4": 'amenity=hospital',
-        "5": 'amenity=bank',       "6": 'shop=supermarket',
-    }
-    if c not in tags:
-        return
-    query = f"""[out:json][timeout:25];
-    node[{tags[c]}](around:2000,{lat},{lon});
-    out body 20;"""
-    try:
-        r = requests.post("https://overpass-api.de/api/interpreter",
-                          data=query, timeout=30)
-        d = r.json()
-    except Exception as e:
-        print("Erreur :", e); pause(); return
-    elems = d.get("elements", [])
-    if not elems:
-        print("  Aucun resultat dans un rayon de 2 km.")
-    else:
-        print(f"  {len(elems)} resultat(s) :\n")
-        for e in elems[:15]:
-            name = e.get("tags", {}).get("name", "(sans nom)")
-            print(f"  • {name[:50]}")
-    pause()
-
-# ============================================================
-#   18. PHASE DE LA LUNE
-# ============================================================
-def lune():
-    banner()
-    now = date.today()
-    y, m, d = now.year, now.month, now.day
-    if m < 3:
-        y -= 1; m += 12
-    a = y // 100
-    b = a // 4
-    c = 2 - a + b
-    e = int(365.25 * (y + 4716))
-    f = int(30.6001 * (m + 1))
-    jd = c + d + e + f - 1524.5
-    days = jd - 2451550.1
-    phase = (days / 29.530588853) % 1
-    if phase < 0: phase += 1
-
-    if phase < 0.03 or phase > 0.97: nom = "🌑 Nouvelle lune"
-    elif phase < 0.22: nom = "🌒 Premier croissant"
-    elif phase < 0.28: nom = "🌓 Premier quartier"
-    elif phase < 0.47: nom = "🌔 Gibbeuse croissante"
-    elif phase < 0.53: nom = "🌕 Pleine lune"
-    elif phase < 0.72: nom = "🌖 Gibbeuse decroissante"
-    elif phase < 0.78: nom = "🌗 Dernier quartier"
-    else: nom = "🌘 Dernier croissant"
-    print(f"  🌕 Phase de la Lune\n")
-    print(f"  {nom}")
-    print(f"  Cycle : {phase*100:.1f}%")
-    # Barre de progression
-    n = int(phase * 30)
-    print(f"  [{'█'*n}{'░'*(30-n)}]")
-    pause()
-
-# ============================================================
-#   19. LANCEMENTS SPATIAUX
-# ============================================================
-def lancements():
-    banner()
-    print("  🚀 Prochains lancements spatiaux\n")
-    d = safe_get("https://ll.thespacedevs.com/2.2.0/launch/upcoming/",
-                 params={"limit": 10, "format": "json"})
-    if not d:
-        print("Erreur API"); pause(); return
-    for l in d.get("results", [])[:10]:
-        name = l.get("name", "?")[:45]
-        net = l.get("net", "")[:16]
-        stat = l.get("status", {}).get("abbrev", "?")
-        print(f"  🚀 {name}")
-        print(f"     🕒 {net}  [{stat}]")
-    pause()
-
-# ============================================================
-#   20. QR CODE POSITION
-# ============================================================
-def qr_code(lat=None, lon=None):
-    if lat is None:
-        lat = ask("Latitude : ")
-        lon = ask("Longitude : ")
-    if not lat or not lon: return
-    if not shutil.which("qrencode"):
-        print("⚠  pkg install qrencode"); pause(); return
-    banner()
-    url = f"https://www.openstreetmap.org/?mlat={lat}&mlon={lon}#map=15/{lat}/{lon}"
-    print(f"  📋 QR code pour : {lat},{lon}\n")
-    subprocess.run(["qrencode", "-t", "ANSIUTF8", url])
-    pause()
-
-# ============================================================
-#   21. EXPORT GPX (point unique)
-# ============================================================
-def export_gpx(lat=None, lon=None, name="point"):
-    if lat is None:
-        lat = ask("Latitude : ")
-        lon = ask("Longitude : ")
-    if not lat or not lon: return
-    gpx = DIR / f"{name}.gpx"
-    with gpx.open("w") as f:
-        f.write('<?xml version="1.0" encoding="UTF-8"?>\n')
-        f.write('<gpx version="1.1" creator="MapCI">\n')
-        f.write(f'<wpt lat="{lat}" lon="{lon}">\n')
-        f.write(f'<name>{name}</name>\n</wpt>\n</gpx>\n')
-    print(f"\n  ✔ GPX sauvegarde : {gpx}")
-    pause()
-
-# ============================================================
-#   22. DASHBOARD (vue synthese)
-# ============================================================
-def dashboard():
-    banner()
-    print("  📊 Tableau de bord\n")
-    # Position
-    d = safe_get("https://ipinfo.io/json")
-    if d:
-        print(f"  📍 {d.get('city')}, {d.get('country')}")
-        loc = d.get("loc","0,0")
-        lat, lon = (loc.split(",")+["0"])[:2]
-    else:
-        lat, lon = "0", "0"
-    # Meteo
-    try:
-        r = subprocess.run(["curl","-s","-A","curl/7.88.1",
-                            f"https://wttr.in/{lat},{lon}?format=%C+%t"],
-                           capture_output=True, text=True, timeout=10)
-        print(f"  🌦️  Meteo : {r.stdout.strip()}")
-    except: pass
-    # ISS
-    iss_d = safe_get("http://api.open-notify.org/iss-now.json")
-    if iss_d:
-        print(f"  🛰️  ISS : {iss_d['iss_position']['latitude']} , "
-              f"{iss_d['iss_position']['longitude']}")
-    # Seismes recents (dernier)
-    eq = safe_get("https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/4.5_day.geojson")
-    if eq and eq.get("features"):
-        p = eq["features"][0]["properties"]
-        print(f"  🚨 Dernier seisme M4.5+ : {p['place'][:40]}")
-    # Lune
-    print(f"  🌕 Lune :", end=" ")
-    now = date.today()
-    y, m, dd = now.year, now.month, now.day
-    if m < 3: y -= 1; m += 12
-    aa = y // 100; bb = aa // 4; cc = 2 - aa + bb
-    ee = int(365.25 * (y + 4716)); ff = int(30.6001 * (m + 1))
-    jd = cc + dd + ee + ff - 1524.5
-    ph = ((jd - 2451550.1) / 29.530588853) % 1
-    if ph < 0.03 or ph > 0.97: print("🌑 Nouvelle")
-    elif ph < 0.25: print("🌒 Croissant")
-    elif ph < 0.53: print("🌕 Pleine proche")
-    elif ph < 0.75: print("🌖 Gibbeuse")
-    else: print("🌘 Decroissante")
-    pause()
-
-# ============================================================
-#   23. QUIZ CAPITALES
-# ============================================================
-def quiz_capitales():
-    banner()
-    pays = [
-        ("France", "Paris"), ("Japon", "Tokyo"), ("Bresil", "Brasilia"),
-        ("Australie", "Canberra"), ("Canada", "Ottawa"),
-        ("Egypte", "Le Caire"), ("Inde", "New Delhi"),
-        ("Cote d'Ivoire", "Yamoussoukro"), ("Senegal", "Dakar"),
-        ("Maroc", "Rabat"), ("Espagne", "Madrid"),
-        ("Italie", "Rome"), ("Allemagne", "Berlin"),
-        ("Russie", "Moscou"), ("Chine", "Pekin"),
-        ("Mexique", "Mexico"), ("Argentine", "Buenos Aires"),
-        ("Turquie", "Ankara"), ("Nigeria", "Abuja"),
-        ("Kenya", "Nairobi"),
-    ]
-    score = 0
-    random.shuffle(pays)
-    for i, (p, cap) in enumerate(pays[:5], 1):
-        print(f"\n  Question {i}/5 : Capitale de {p} ?")
-        rep = ask("  Reponse : ").strip().lower()
-        if rep == cap.lower():
-            print("  ✔ Correct !"); score += 1
-        else:
-            print(f"  ✗ Mauvaise. Reponse : {cap}")
-    print(f"\n  🏆 Score : {score}/5")
-    pause()
-
-# ============================================================
-#   24. CHASSE AU TRESOR
-# ============================================================
-def chasse_tresor():
-    banner()
-    print("  🏴‍☠️  Chasse au tresor\n")
-    print("  Je vais te donner 5 indices pour trouver un lieu.\n")
-    lat = random.uniform(-60, 60); lon = random.uniform(-170, 170)
-    d = safe_get("https://nominatim.openstreetmap.org/reverse",
-                 params={"lat": lat, "lon": lon, "format": "json"})
-    if d and d.get("address"):
-        a = d["address"]
-        country = a.get("country", "?")
-        print(f"  Indice 1 : Pays → {country}")
-        print(f"  Indice 2 : Latitude → {lat:.1f}")
-        print(f"  Indice 3 : Longitude → {lon:.1f}")
-        ask("\n  Devine le lieu : ")
-        print(f"\n  ✔ Reponse : {d.get('display_name', '?')[:60]}")
-        if ask("  Voir sur carte ? (o/n) : ").lower() == "o":
-            mapterra(str(lat), str(lon))
-            return
-    else:
-        print("  Point en pleine mer, essaie encore !")
-    pause()
-
-# ============================================================
-#   MENU PRINCIPAL
-# ============================================================
-MENU = [
-    ("1",  "🔎 Rechercher ville"),
-    ("2",  "🗺️  Carte (OSM/Google/MapSCII)"),
-    ("3",  "📷 Image GPS EXIF"),
-    ("4",  "🌦️  Meteo actuelle"),
-    ("5",  "📅 Meteo 7 jours"),
-    ("6",  "💨 Qualite de l'air"),
-    ("7",  "📍 Ma position (IP)"),
-    ("8",  "🧭 Distance + itineraire"),
-    ("9",  "🛰️  Position ISS"),
-    ("10", "🌐 Fuseaux horaires"),
-    ("11", "🏔️  Altitude d'un lieu"),
-    ("12", "🏛️  Points d'interet"),
-    ("13", "🌕 Phase de la Lune"),
-    ("14", "🚀 Lancements spatiaux"),
-    ("15", "📋 QR code position"),
-    ("16", "📤 Export GPX"),
-    ("17", "📊 Tableau de bord"),
-    ("18", "📌 Favoris"),
-    ("19", "📸 Golden hour"),
-    ("20", "🚨 Seismes recents"),
-    ("21", "🎲 Coords aleatoires"),
-    ("22", "🎮 Quiz capitales"),
-    ("23", "🏴‍☠️  Chasse au tresor"),
-    ("24", "🎯 Jeu devine ville"),
-    ("25", "📝 Historique"),
-    ("26", "⚙️  Parametres"),
-    ("0",  "❌ Quitter"),
-]
-
-ACTIONS = {
-    "1": search_city, "2": lambda: mapterra(), "3": exif_img,
-    "4": lambda: meteo(), "5": lambda: meteo_7j(),
-    "6": lambda: air_quality(),
-    "7": my_ip, "8": distance, "9": iss,
-    "10": lambda: fuseaux(), "11": lambda: altitude(),
-    "12": lambda: poi_proches(),
-    "13": lune, "14": lancements, "15": lambda: qr_code(),
-    "16": lambda: export_gpx(), "17": dashboard,
-    "18": favoris, "19": lambda: golden(), "20": seismes,
-    "21": random_coords, "22": quiz_capitales,
-    "23": chasse_tresor, "24": jeu,
-    "25": history_menu, "26": config,
+VILLES_LOCALES = {
+    "abidjan":        (5.3599517, -4.0082563, "Abidjan, Côte d'Ivoire"),
+    "yamoussoukro":   (6.8276228, -5.2893433, "Yamoussoukro, Côte d'Ivoire"),
+    "bouake":         (7.6906,    -5.0301,    "Bouaké, Côte d'Ivoire"),
+    "dakar":          (14.6928,   -17.4467,   "Dakar, Sénégal"),
+    "bamako":         (12.6392,   -8.0029,    "Bamako, Mali"),
+    "ouagadougou":    (12.3714,   -1.5197,    "Ouagadougou, Burkina Faso"),
+    "lome":           (6.1375,    1.2123,     "Lomé, Togo"),
+    "cotonou":        (6.3654,    2.4183,     "Cotonou, Bénin"),
+    "accra":          (5.6037,    -0.1870,    "Accra, Ghana"),
+    "lagos":          (6.5244,    3.3792,     "Lagos, Nigeria"),
+    "paris":          (48.8566,   2.3522,     "Paris, France"),
+    "marseille":      (43.2965,   5.3698,     "Marseille, France"),
+    "lyon":           (45.7640,   4.8357,     "Lyon, France"),
+    "londres":        (51.5074,   -0.1278,    "Londres, Royaume-Uni"),
+    "london":         (51.5074,   -0.1278,    "Londres, Royaume-Uni"),
+    "bruxelles":      (50.8503,   4.3517,     "Bruxelles, Belgique"),
+    "berlin":         (52.5200,   13.4050,    "Berlin, Allemagne"),
+    "madrid":         (40.4168,   -3.7038,    "Madrid, Espagne"),
+    "rome":           (41.9028,   12.4964,    "Rome, Italie"),
+    "lisbonne":       (38.7223,   -9.1393,    "Lisbonne, Portugal"),
+    "new york":       (40.7128,   -74.0060,   "New York, USA"),
+    "los angeles":    (34.0522,   -118.2437,  "Los Angeles, USA"),
+    "montreal":       (45.5017,   -73.5673,   "Montréal, Canada"),
+    "tokyo":          (35.6762,   139.6503,   "Tokyo, Japon"),
+    "pekin":          (39.9042,   116.4074,   "Pékin, Chine"),
+    "beijing":        (39.9042,   116.4074,   "Pékin, Chine"),
+    "shanghai":       (31.2304,   121.4737,   "Shanghai, Chine"),
+    "dubai":          (25.2048,   55.2708,    "Dubaï, EAU"),
+    "le caire":       (30.0444,   31.2357,    "Le Caire, Égypte"),
+    "cairo":          (30.0444,   31.2357,    "Le Caire, Égypte"),
+    "marrakech":      (31.6295,   -7.9811,    "Marrakech, Maroc"),
+    "casablanca":     (33.5731,   -7.5898,    "Casablanca, Maroc"),
+    "tunis":          (36.8065,   10.1815,    "Tunis, Tunisie"),
+    "alger":          (36.7538,   3.0588,     "Alger, Algérie"),
+    "kinshasa":       (-4.4419,   15.2663,    "Kinshasa, RDC"),
+    "brazzaville":    (-4.2634,   15.2429,    "Brazzaville, Congo"),
+    "libreville":     (0.4162,    9.4673,     "Libreville, Gabon"),
+    "douala":         (4.0511,    9.7679,     "Douala, Cameroun"),
+    "yaounde":        (3.8480,    11.5021,    "Yaoundé, Cameroun"),
+    "nairobi":        (-1.2864,   36.8172,    "Nairobi, Kenya"),
+    "johannesburg":   (-26.2041,  28.0473,    "Johannesburg, Afrique du Sud"),
+    "le cap":         (-33.9249,  18.4241,    "Le Cap, Afrique du Sud"),
+    "sydney":         (-33.8688,  151.2093,   "Sydney, Australie"),
+    "melbourne":      (-37.8136,  144.9631,   "Melbourne, Australie"),
+    "rio de janeiro": (-22.9068,  -43.1729,   "Rio de Janeiro, Brésil"),
+    "sao paulo":      (-23.5505,  -46.6333,   "São Paulo, Brésil"),
+    "buenos aires":   (-34.6037,  -58.3816,   "Buenos Aires, Argentine"),
+    "mexico":         (19.4326,   -99.1332,   "Mexico, Mexique"),
 }
 
-def main_menu():
-    while True:
-        banner()
-        for k, label in MENU:
-            print(f"  {k:>2}. {label}")
-        print("  " + "─"*30)
-        c = ask("👉 Choix : ")
-        if c == "0":
-            print("👋 Bye !"); sys.exit(0)
-        fn = ACTIONS.get(c)
-        if fn:
-            try: fn()
-            except KeyboardInterrupt:
-                print("\n(interrompu)")
-            except Exception as e:
-                print(f"❌ Erreur : {e}"); pause()
+# ============================================================
+# UTILITAIRES
+# ============================================================
+def clear():
+    os.system("cls" if os.name == "nt" else "clear")
+
+def wcswidth(s):
+    return sum(2 if ord(ch) > 0x1F000 else 1 for ch in s)
+
+def pad_center(s, width):
+    w = wcswidth(s)
+    if w >= width:
+        return s
+    left = (width - w) // 2
+    right = width - w - left
+    return " " * left + s + " " * right
+
+def box_line(title, width=46):
+    inner = width - 2
+    return [
+        "╔" + "═" * inner + "╗",
+        "║" + pad_center(title, inner) + "║",
+        "║" + "─" * inner + "║",
+    ]
+
+def print_header():
+    for line in box_line(f"🗺️  M A P - C I   V {APP_VERSION}", 46):
+        print(line)
+    print("║" + pad_center("Cartographie • GPS • EXIF • Live • ISS", 44) + "║")
+    print("╚" + "═" * 44 + "╝")
+
+def pause():
+    input("\n⏎ Entrée pour revenir au menu...")
+
+def load_json(path, default):
+    if path.exists():
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return default
+    return default
+
+def save_json(path, data):
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+def ajouter_historique(action, details=""):
+    hist = load_json(HISTORIQUE_FILE, [])
+    hist.append({"date": datetime.now().isoformat(), "action": action, "details": details})
+    save_json(HISTORIQUE_FILE, hist[-300:])
+
+def beep():
+    print("\a", end="", flush=True)
+    if os.name == "nt":
+        try:
+            import winsound
+            winsound.Beep(1200, 500)
+            winsound.Beep(1500, 500)
+        except Exception:
+            pass
+
+# ============================================================
+# 🌍 GÉOCODEUR PHOTON-ONLY + CACHE LOCAL
+# ============================================================
+_GEO_CACHE = load_json(GEO_CACHE_FILE, {})
+
+def _photon_geocode(nom):
+    """Géocodeur principal : Photon (komoot). Aucun 403 connu."""
+    try:
+        r = requests.get(
+            "https://photon.komoot.io/api/",
+            params={"q": nom, "limit": 1},
+            headers={"User-Agent": USER_AGENT},
+            timeout=10,
+        )
+        if r.status_code != 200:
+            return None
+        feats = r.json().get("features", [])
+        if not feats:
+            return None
+        f = feats[0]
+        lon, lat = f["geometry"]["coordinates"]
+        p = f.get("properties", {})
+        addr = ", ".join(filter(None, [
+            p.get("name"), p.get("city"), p.get("state"), p.get("country")
+        ])) or nom
+        return (lat, lon, addr)
+    except Exception:
+        return None
+
+def geocoder_robuste(nom):
+    """
+    Ordre : cache JSON → dictionnaire local → Photon API.
+    Retourne (lat, lon, adresse) ou None.
+    """
+    if not nom:
+        return None
+    key = nom.strip().lower()
+
+    # 1) Cache JSON
+    if key in _GEO_CACHE:
+        c = _GEO_CACHE[key]
+        return (c["lat"], c["lon"], c["addr"])
+
+    # 2) Dictionnaire local (zéro réseau)
+    if key in VILLES_LOCALES:
+        lat, lon, addr = VILLES_LOCALES[key]
+        _GEO_CACHE[key] = {"lat": lat, "lon": lon, "addr": addr}
+        save_json(GEO_CACHE_FILE, _GEO_CACHE)
+        return (lat, lon, addr)
+
+    # 3) Photon
+    res = _photon_geocode(nom)
+    if res:
+        _GEO_CACHE[key] = {"lat": res[0], "lon": res[1], "addr": res[2]}
+        save_json(GEO_CACHE_FILE, _GEO_CACHE)
+    return res
+
+def _geocode(nom):
+    return geocoder_robuste(nom)
+
+def _saisie_manuelle_coords(prompt_nom="Nom du lieu : "):
+    """Demande lat/lon à l'utilisateur. Retourne (lat, lon, nom) ou None."""
+    try:
+        lat = float(input("Latitude  : ").strip())
+        lon = float(input("Longitude : ").strip())
+        nom = input(prompt_nom).strip() or f"{lat},{lon}"
+        return (lat, lon, nom)
+    except ValueError:
+        print("❌ Coordonnées invalides.")
+        return None
+
+# ============================================================
+# 🚨 ALARME ISS (THREAD)
+# ============================================================
+class ISSAlarm:
+    def __init__(self):
+        self.stop_event = threading.Event()
+        self.thread = None
+        self.config = load_json(ALARM_CONFIG_FILE, {
+            "enabled": False,
+            "lat": None, "lon": None, "lieu": "",
+            "seuil_minutes": 60,
+            "check_interval": 300,
+            "duree_min": 60,
+            "notified": [],
+        })
+        self.notified = set(self.config.get("notified", []))
+
+    def _fetch_passes(self, lat, lon, n=10):
+        from iss_pass import get_next_passes
+        passes_raw = get_next_passes(lat, lon, hours=48, min_elevation=0, verbose=False)
+        result = []
+        for p in passes_raw[:n]:
+            result.append({
+                "risetime": int(p['risetime'].timestamp()),
+                "duration": int(p['duration_s']),
+                "max_elevation": round(p['max_elevation']),
+            })
+        return result
+    def _loop(self):
+        while not self.stop_event.is_set():
+            try:
+                cfg = self.config
+                if cfg["enabled"] and cfg["lat"] is not None:
+                    passes = self._fetch_passes(cfg["lat"], cfg["lon"], n=5)
+                    now = time.time()
+                    seuil = cfg["seuil_minutes"] * 60
+                    for p in passes:
+                        rt = p["risetime"]
+                        delta = rt - now
+                        if p.get("duration", 0) < cfg["duree_min"]:
+                            continue
+                        if 0 < delta <= seuil and rt not in self.notified:
+                            self._trigger(p, delta)
+                            self.notified.add(rt)
+                            self.config["notified"] = list(self.notified)[-50:]
+                            save_json(ALARM_CONFIG_FILE, self.config)
+            except Exception:
+                pass
+            self.stop_event.wait(self.config.get("check_interval", 300))
+
+    def start(self):
+        if self.thread and self.thread.is_alive():
+            return
+        self.stop_event.clear()
+        self.thread = threading.Thread(target=self._loop, daemon=True)
+        self.thread.start()
+
+    def stop(self):
+        self.stop_event.set()
+
+    def _trigger(self, p, delta_sec):
+        rt = datetime.fromtimestamp(p["risetime"])
+        mins = int(delta_sec // 60)
+        secs = int(delta_sec % 60)
+        duration = p.get("duration", 0)
+        max_elev = p.get("max_elevation", "?")
+
+        print("\n" + "=" * 52)
+        print("🚨  A L E R T E   I S S  🚨".center(52))
+        print("=" * 52)
+        print(f"🛰️  Passage dans {mins} min {secs:02d} s")
+        print(f"⏰ Risetime  : {rt:%d/%m/%Y %H:%M:%S}")
+        print(f"⏱️  Durée     : {duration} sec")
+        if max_elev != "?":
+            print(f"📐 Élévation : {max_elev}°")
+        print(f"📍 Lieu      : {self.config.get('lieu', '?')}")
+        print("=" * 52)
+        beep()
+
+        if iss_alerts is not None:
+            try:
+                titre = f"ISS dans {mins} min"
+                msg = f"Risetime {rt:%H:%M:%S} - duree {duration}s - {self.config.get('lieu','?')}"
+                iss_alerts.notifier_android(titre, msg)
+                iss_alerts.vibrer(800)
+                iss_alerts.parler(f"Attention, I S S dans {mins} minutes")
+                iss_alerts.envoyer_sms(f"[MAP-CI] {titre} - {msg}")
+            except Exception:
+                pass
+
+        log = load_json(ALARM_LOG_FILE, [])
+        log.append({
+            "date": datetime.now().isoformat(),
+            "risetime": rt.isoformat(),
+            "dans_secondes": int(delta_sec),
+            "duree": duration,
+            "lieu": self.config.get("lieu", ""),
+        })
+        save_json(ALARM_LOG_FILE, log[-100:])
+        ajouter_historique("🚨 Alarme ISS", f"{rt:%H:%M:%S} dans {mins} min")
+
+    def configurer(self):
+        print("\n⚙️  Configuration de l'alarme ISS")
+        print("─" * 44)
+        print("🌍 Tape une ville connue, ou 'M' pour saisir les coordonnées manuellement.")
+        print("   (Entrée seule = garder la position actuelle)\n")
+
+        saisie = input("🌍 Ville [M/manuelle] : ").strip()
+
+        # --- Mode manuel ---
+        if saisie.lower() == "m":
+            coords = _saisie_manuelle_coords()
+            if not coords:
+                return
+            lat, lon, nom = coords
+            self.config["lat"] = lat
+            self.config["lon"] = lon
+            self.config["lieu"] = nom
+            print(f"✅ Position enregistrée : {nom} ({lat}, {lon})")
+
+        # --- Ville saisie ---
+        elif saisie:
+            print("⏳ Recherche...")
+            res = geocoder_robuste(saisie)
+            if res:
+                lat, lon, addr = res
+                self.config["lat"] = lat
+                self.config["lon"] = lon
+                self.config["lieu"] = saisie
+                print(f"✅ {addr}")
+                print(f"   Lat/Lon : {lat:.5f}, {lon:.5f}")
+            else:
+                print("❌ Ville introuvable (Photon n'a rien trouvé).")
+                if input("🔧 Saisir les coordonnées à la main ? (o/N) : ").strip().lower() == "o":
+                    coords = _saisie_manuelle_coords()
+                    if not coords:
+                        return
+                    lat, lon, nom = coords
+                    self.config["lat"] = lat
+                    self.config["lon"] = lon
+                    self.config["lieu"] = nom
+                    print("✅ Enregistré.")
+                else:
+                    return
+
+        # --- Seuil ---
+        try:
+            seuil = input(f"⏱️  Seuil d'alerte en minutes [{self.config['seuil_minutes']}] : ").strip()
+            if seuil:
+                self.config["seuil_minutes"] = max(1, int(seuil))
+        except ValueError:
+            pass
+
+        # --- Durée mini ---
+        try:
+            dur = input(f"⏳ Durée mini passage (s) [{self.config['duree_min']}] : ").strip()
+            if dur:
+                self.config["duree_min"] = max(0, int(dur))
+        except ValueError:
+            pass
+
+        act = input("🔔 Activer l'alarme ? (o/N) : ").strip().lower()
+        self.config["enabled"] = (act == "o")
+
+        save_json(ALARM_CONFIG_FILE, self.config)
+
+        if self.config["enabled"]:
+            if self.config["lat"] is None:
+                print("⚠️  Aucune position définie — l'alarme ne se déclenchera pas.")
+                print("💡 Relance l'option 27 avec 'M' pour saisir les coordonnées.")
+            else:
+                self.start()
+                print("✅ Alarme ACTIVÉE en arrière-plan.")
+                print(f"   Surveillance : {self.config['lieu']} ({self.config['lat']}, {self.config['lon']})")
         else:
-            print("Choix invalide"); time.sleep(1)
+            self.stop()
+            print("🔕 Alarme DÉSACTIVÉE.")
+
+    def statut(self):
+        print("\n🛰️  Statut de l'alarme ISS")
+        print("─" * 44)
+        print(f"État      : {'✅ ACTIVÉE' if self.config['enabled'] else '🔕 Désactivée'}")
+        print(f"Lieu      : {self.config.get('lieu') or '(non défini)'}")
+        print(f"Coords    : {self.config.get('lat')}, {self.config.get('lon')}")
+        print(f"Seuil     : {self.config.get('seuil_minutes')} min")
+        print(f"Durée mini: {self.config.get('duree_min')} s")
+        print(f"Vérif     : toutes les {self.config.get('check_interval')} s")
+
+        if self.config["enabled"] and self.config["lat"] is None:
+            print("\n⚠️  ATTENTION : alarme activée mais AUCUNE position définie.")
+            print("   → Option 27 puis 'M' pour saisir les coordonnées.")
+
+        log = load_json(ALARM_LOG_FILE, [])
+        print(f"Dernières alertes : {len(log)}")
+        for e in log[-5:]:
+            print(f"  • {e['date'][:19]} — {e['lieu']} (dans {e['dans_secondes']//60} min)")
+
+    def tester(self):
+        print("\n🔔 Test de l'alarme...")
+        fake = {"risetime": time.time() + 3600, "duration": 480, "max_elevation": 72}
+        self._trigger(fake, 3600)
+        print("\n✅ Si vous avez entendu un bip, l'alarme fonctionne.")
+
+iss_alarm = ISSAlarm()
+
+# ============================================================
+# OPTION 1 — RECHERCHER VILLE
+# ============================================================
+def rechercher_ville():
+    q = input("🔎 Ville / lieu : ").strip()
+    if not q:
+        return
+    print("⏳ Recherche...")
+    res = geocoder_robuste(q)
+    if res:
+        lat, lon, addr = res
+        print(f"\n✅ {addr}")
+        print(f"📍 Lat : {lat}")
+        print(f"📍 Lon : {lon}")
+        ajouter_historique("Recherche ville", q)
+    else:
+        print("❌ Aucun résultat.")
+        if input("🔧 Saisir les coordonnées à la main ? (o/N) : ").strip().lower() == "o":
+            coords = _saisie_manuelle_coords()
+            if coords:
+                print(f"✅ {coords[2]} : {coords[0]}, {coords[1]}")
+
+# ============================================================
+# OPTION 2 — CARTE
+# ============================================================
+def afficher_carte():
+    try:
+        lat = float(input("Latitude  : ").strip())
+        lon = float(input("Longitude : ").strip())
+    except ValueError:
+        print("❌ Invalide.")
+        return
+    print(f"\n🌐 OSM    : https://www.openstreetmap.org/?mlat={lat}&mlon={lon}#map=15/{lat}/{lon}")
+    print(f"🗺️  Google : https://www.google.com/maps/@{lat},{lon},15z")
+    ajouter_historique("Carte", f"{lat},{lon}")
+
+# ============================================================
+# OPTION 3 — EXIF GPS
+# ============================================================
+def _to_deg(coord, ref):
+    if coord is None or ref is None:
+        return None
+    d, m, s = coord
+    return d + m / 60.0 + s / 3600.0
+
+def extraire_gps_exif():
+    if not PIL_OK:
+        print("❌ Pillow requis.")
+        return
+    chemin = input("📷 Chemin image : ").strip()
+    if not chemin or not Path(chemin).exists():
+        print("❌ Introuvable.")
+        return
+    try:
+        img = Image.open(chemin)
+        exif = img.getexif()
+        gps_ifd = exif.get_ifd(0x8825)
+        if not gps_ifd:
+            print("❌ Pas de GPS.")
+            return
+        gps = {GPSTAGS.get(k, k): v for k, v in gps_ifd.items()}
+        lat = _to_deg(gps.get("GPSLatitude"), gps.get("GPSLatitudeRef"))
+        lon = _to_deg(gps.get("GPSLongitude"), gps.get("GPSLongitudeRef"))
+        if gps.get("GPSLatitudeRef") == "S":
+            lat = -lat
+        if gps.get("GPSLongitudeRef") == "W":
+            lon = -lon
+        print(f"\n✅ Lat : {lat:.6f}\n✅ Lon : {lon:.6f}")
+        if gps.get("GPSAltitude"):
+            print(f"🏔️  Alt : {gps['GPSAltitude']:.1f} m")
+        print(f"🌐 https://www.openstreetmap.org/?mlat={lat}&mlon={lon}#map=15/{lat}/{lon}")
+        ajouter_historique("EXIF GPS", f"{lat},{lon}")
+    except Exception as e:
+        print(f"❌ {e}")
+
+# ============================================================
+# OPTIONS 4-5 — MÉTÉO
+# ============================================================
+WEATHER_CODES = {
+    0:"☀️  Ciel dégagé",1:"🌤️  Peu nuageux",2:"⛅ Partiellement nuageux",3:"☁️  Couvert",
+    45:"🌫️  Brouillard",48:"🌫️  Brouillard givrant",51:"🌦️  Bruine légère",53:"🌦️  Bruine modérée",
+    55:"🌧️  Bruine dense",61:"🌧️  Pluie légère",63:"🌧️  Pluie modérée",65:"🌧️  Pluie forte",
+    71:"❄️  Neige légère",73:"❄️  Neige modérée",75:"❄️  Neige forte",80:"🌦️  Averses légères",
+    81:"🌧️  Averses modérées",82:"🌧️  Averses violentes",95:"⛈️  Orage",
+    96:"⛈️  Orage grêle",99:"⛈️  Orage violent",
+}
+
+def meteo_actuelle():
+    ville = input("🌦️  Ville : ").strip()
+    c = _geocode(ville)
+    if not c:
+        print("❌ Introuvable.")
+        return
+    lat, lon, addr = c
+    try:
+        r = requests.get(
+            f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}"
+            "&current=temperature_2m,relative_humidity_2m,wind_speed_10m,weather_code&timezone=auto",
+            timeout=10
+        ).json()
+        cur = r["current"]
+        print(f"\n📍 {addr}")
+        print(f"🌡️  {cur['temperature_2m']}°C")
+        print(f"💧 {cur['relative_humidity_2m']}%")
+        print(f"💨 {cur['wind_speed_10m']} km/h")
+        print(f"☁️  {WEATHER_CODES.get(cur['weather_code'], '?')}")
+        ajouter_historique("Météo", ville)
+    except Exception as e:
+        print(f"❌ {e}")
+
+def meteo_7_jours():
+    ville = input("📅 Ville : ").strip()
+    c = _geocode(ville)
+    if not c:
+        print("❌ Introuvable.")
+        return
+    lat, lon, addr = c
+    try:
+        r = requests.get(
+            f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}"
+            "&daily=temperature_2m_max,temperature_2m_min,weather_code&timezone=auto&forecast_days=7",
+            timeout=10
+        ).json()
+        d = r["daily"]
+        print(f"\n📍 {addr}\n")
+        print(f"{'Date':<12}{'Min':>6}{'Max':>6}  Condition")
+        print("─" * 52)
+        for i, day in enumerate(d["time"]):
+            desc = WEATHER_CODES.get(d["weather_code"][i], "?")
+            print(f"{day:<12}{d['temperature_2m_min'][i]:>5}°{d['temperature_2m_max'][i]:>5}°  {desc}")
+        ajouter_historique("Météo 7j", ville)
+    except Exception as e:
+        print(f"❌ {e}")
+
+# ============================================================
+# OPTION 6 — QUALITÉ DE L'AIR
+# ============================================================
+def qualite_air():
+    ville = input("💨 Ville : ").strip()
+    c = _geocode(ville)
+    if not c:
+        print("❌ Introuvable.")
+        return
+    lat, lon, addr = c
+    try:
+        r = requests.get(
+            f"https://air-quality-api.open-meteo.com/v1/air-quality?"
+            f"latitude={lat}&longitude={lon}"
+            f"&current=pm10,pm2_5,ozone,nitrogen_dioxide,european_aqi&timezone=auto",
+            timeout=10
+        ).json()
+        cur = r["current"]
+        aqi = cur.get("european_aqi", 0)
+        niveau = ("🟢 Excellent" if aqi <= 20 else
+                  "🟡 Bon" if aqi <= 40 else
+                  "🟠 Moyen" if aqi <= 60 else
+                  "🔴 Mauvais" if aqi <= 80 else
+                  "🟣 Très mauvais" if aqi <= 100 else
+                  "⚫ Extrêmement mauvais")
+        print(f"\n📍 {addr}")
+        print(f"💨 AQI européen : {aqi} — {niveau}")
+        print(f"  PM10  : {cur.get('pm10')} µg/m³")
+        print(f"  PM2.5 : {cur.get('pm2_5')} µg/m³")
+        print(f"  O₃    : {cur.get('ozone')} µg/m³")
+        print(f"  NO₂   : {cur.get('nitrogen_dioxide')} µg/m³")
+        ajouter_historique("Qualité air", ville)
+    except Exception as e:
+        print(f"❌ {e}")
+
+# ============================================================
+# OPTION 7 — POSITION IP
+# ============================================================
+def ma_position_ip():
+    try:
+        d = requests.get(
+            "http://ip-api.com/json/?fields=status,country,city,zip,lat,lon,timezone,isp,query",
+            timeout=10
+        ).json()
+        if d.get("status") != "success":
+            print("❌ Échec.")
+            return
+        print(f"\n🌍 {d['country']} — {d['city']} ({d['zip']})")
+        print(f"📍 {d['lat']}, {d['lon']}")
+        print(f"🕐 {d['timezone']}")
+        print(f"📡 {d['isp']}  |  IP : {d['query']}")
+        ajouter_historique("Position IP", d["query"])
+    except Exception as e:
+        print(f"❌ {e}")
+
+# ============================================================
+# OPTION 8 — DISTANCE + ITINÉRAIRE
+# ============================================================
+def distance_itineraire():
+    if not GEOPY_OK:
+        print("❌ geopy requis.")
+        return
+    try:
+        la1 = float(input("Lat A : ")); lo1 = float(input("Lon A : "))
+        la2 = float(input("Lat B : ")); lo2 = float(input("Lon B : "))
+    except ValueError:
+        print("❌ Invalide.")
+        return
+    d = geodesic((la1, lo1), (la2, lo2)).km
+    print(f"\n📏 Distance : {d:.2f} km")
+    print(f"🌐 https://www.openstreetmap.org/directions?from={la1},{lo1}&to={la2},{lo2}")
+    ajouter_historique("Distance", f"{d:.1f} km")
+
+# ============================================================
+# OPTION 9 — POSITION ISS
+# ============================================================
+def position_iss():
+    try:
+        d = requests.get("http://api.open-notify.org/iss-now.json", timeout=10).json()
+        p = d["iss_position"]
+        ts = datetime.fromtimestamp(d["timestamp"])
+        print(f"\n🛰️  ISS à {ts:%d/%m/%Y %H:%M:%S} UTC")
+        print(f"📍 Lat : {p['latitude']}")
+        print(f"📍 Lon : {p['longitude']}")
+        print(f"🌐 https://www.openstreetmap.org/?mlat={p['latitude']}&mlon={p['longitude']}#map=3/{p['latitude']}/{p['longitude']}")
+        ajouter_historique("ISS", f"{p['latitude']},{p['longitude']}")
+    except Exception as e:
+        print(f"❌ {e}")
+
+# ============================================================
+# OPTION P — PROCHAINS PASSAGES ISS
+# ============================================================
+def passages_iss():
+    from iss_pass import get_next_passes, format_pass
+    ville = input("Ville (Entree = config alarme) : ").strip()
+    if ville:
+        c = _geocode(ville)
+        if not c:
+            print("Introuvable.")
+            return
+        lat, lon, addr = c
+    else:
+        lat = iss_alarm.config.get("lat")
+        lon = iss_alarm.config.get("lon")
+        addr = iss_alarm.config.get("lieu") or "?"
+    if lat is None:
+        print("Aucune position definie.")
+        return
+
+    print(f"Calcul des passages ISS pour {addr}...")
+    passes = get_next_passes(lat, lon, hours=48, min_elevation=0, verbose=True)
+    if not passes:
+        print("Aucun passage prevu dans les 48 prochaines heures.")
+        return
+
+    print(f"{len(passes)} passage(s) prevu(s) dans les 48h :")
+    print("  " + "-" * 52)
+    for p in passes:
+        print(format_pass(p, offset_h=0))
+    print("  " + "-" * 52)
+    ajouter_historique("Passages ISS (Skyfield)", addr)
+
+def fuseaux_horaires():
+    ville = input("🌐 Ville : ").strip()
+    c = _geocode(ville)
+    if not c:
+        print("❌ Introuvable.")
+        return
+    lat, lon, addr = c
+    try:
+        d = requests.get(
+            f"https://timeapi.io/api/Time/current/coordinate?latitude={lat}&longitude={lon}",
+            timeout=10
+        ).json()
+        print(f"\n📍 {addr}")
+        print(f"🕐 Heure locale : {d.get('dateTime', '?')}")
+        print(f"🌍 Fuseau      : {d.get('timeZone', '?')}")
+        print(f"📅 Jour        : {d.get('dayOfWeek', '?')}")
+        ajouter_historique("Fuseau horaire", ville)
+    except Exception as e:
+        print(f"❌ {e}")
+
+# ============================================================
+# OPTION 11 — ALTITUDE
+# ============================================================
+def altitude_lieu():
+    ville = input("🏔️  Ville : ").strip()
+    c = _geocode(ville)
+    if not c:
+        print("❌ Introuvable.")
+        return
+    lat, lon, addr = c
+    try:
+        d = requests.get(
+            f"https://api.open-elevation.com/api/v1/lookup?locations={lat},{lon}",
+            timeout=10
+        ).json()
+        elev = d["results"][0]["elevation"]
+        print(f"\n📍 {addr}")
+        print(f"🏔️  Altitude : {elev} m")
+        ajouter_historique("Altitude", f"{ville} = {elev} m")
+    except Exception as e:
+        print(f"❌ {e}")
+
+# ============================================================
+# OPTION 12 — POINTS D'INTÉRÊT
+# ============================================================
+def points_interet():
+    ville = input("🏛️  Ville : ").strip()
+    c = _geocode(ville)
+    if not c:
+        print("❌ Introuvable.")
+        return
+    lat, lon, addr = c
+    cat = input("Catégorie (restaurant/museum/hotel/cafe) [restaurant] : ").strip() or "restaurant"
+    tag = "tourism" if cat == "museum" else "amenity"
+    val = cat if cat in ("restaurant", "museum", "hotel", "cafe") else "restaurant"
+    query = f"""
+    [out:json][timeout:15];
+    node["{tag}"="{val}"](around:3000,{lat},{lon});
+    out body 15;
+    """
+    try:
+        r = requests.post(
+            "https://overpass-api.de/api/interpreter",
+            data={"data": query}, timeout=20
+        ).json()
+        elems = r.get("elements", [])
+        print(f"\n🏛️  {len(elems)} résultat(s) autour de {addr}\n")
+        for e in elems[:10]:
+            name = e.get("tags", {}).get("name", "(sans nom)")
+            d_lat, d_lon = e["lat"], e["lon"]
+            dist = geodesic((lat, lon), (d_lat, d_lon)).km if GEOPY_OK else 0
+            print(f"  • {name} — {dist:.2f} km ({d_lat:.4f},{d_lon:.4f})")
+        ajouter_historique("POI", f"{cat} @ {ville}")
+    except Exception as e:
+        print(f"❌ {e}")
+
+# ============================================================
+# OPTION 13 — PHASE DE LA LUNE
+# ============================================================
+def phase_lune():
+    now = datetime.utcnow()
+    ref = datetime(2000, 1, 6, 18, 14)
+    days = (now - ref).total_seconds() / 86400
+    syn = 29.530588853
+    age = days % syn
+    if age < 1.84566: nom, emoji = "Nouvelle Lune", "🌑"
+    elif age < 5.53699: nom, emoji = "Premier Croissant", "🌒"
+    elif age < 9.22831: nom, emoji = "Premier Quartier", "🌓"
+    elif age < 12.91963: nom, emoji = "Gibbeuse Croissante", "🌔"
+    elif age < 16.61096: nom, emoji = "Pleine Lune", "🌕"
+    elif age < 20.30228: nom, emoji = "Gibbeuse Décroissante", "🌖"
+    elif age < 23.99361: nom, emoji = "Dernier Quartier", "🌗"
+    elif age < 27.68493: nom, emoji = "Dernier Croissant", "🌘"
+    else: nom, emoji = "Nouvelle Lune", "🌑"
+    ill = (1 - math.cos(2 * math.pi * age / syn)) / 2 * 100
+    print(f"\n{emoji}  {nom}")
+    print(f"📊 Âge : {age:.2f} jours")
+    print(f"💡 Illumination : {ill:.1f}%")
+    ajouter_historique("Phase lune", nom)
+
+# ============================================================
+# OPTION 14 — LANCEMENTS SPATIAUX
+# ============================================================
+def lancements_spatiaux():
+    try:
+        r = requests.get(
+            "https://ll.thespacedevs.com/2.2.0/launch/upcoming/?limit=10",
+            timeout=15
+        ).json()
+        results = r.get("results", [])
+        if not results:
+            print("❌ Aucun lancement prévu.")
+            return
+        print("\n🚀 Prochains lancements spatiaux :\n")
+        for l in results:
+            nom = l.get("name", "?")
+            net = l.get("net", "")[:16].replace("T", " ")
+            pad = l.get("pad", {}).get("location", {}).get("name", "?")
+            status = l.get("status", {}).get("abbrev", "?")
+            print(f"  🚀 {nom}")
+            print(f"     ⏰ {net}  |  📍 {pad}  |  [{status}]")
+        ajouter_historique("Lancements", f"{len(results)} résultats")
+    except Exception as e:
+        print(f"❌ {e}")
+
+# ============================================================
+# OPTION 15 — QR CODE
+# ============================================================
+def qr_code_position():
+    if not QRCODE_OK:
+        print("❌ pip install qrcode[pil]")
+        return
+    try:
+        lat = float(input("Latitude : "))
+        lon = float(input("Longitude : "))
+    except ValueError:
+        print("❌ Invalide.")
+        return
+    txt = f"geo:{lat},{lon}"
+    qr = qrcode.QRCode(version=1, box_size=10, border=2)
+    qr.add_data(txt); qr.make(fit=True)
+    img = qr.make_image(fill_color="black", back_color="white")
+    f = Path.cwd() / f"qr_{lat}_{lon}.png"
+    img.save(f)
+    print(f"\n✅ {f}")
+
+# ============================================================
+# OPTION 16 — EXPORT GPX
+# ============================================================
+def export_gpx():
+    try:
+        lat = float(input("Latitude : "))
+        lon = float(input("Longitude : "))
+    except ValueError:
+        print("❌ Invalide.")
+        return
+    nom = input("Nom : ").strip() or "Point MAP-CI"
+    gpx = f"""<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="MAP-CI V6" xmlns="http://www.topografix.com/GPX/1/1">
+  <wpt lat="{lat}" lon="{lon}"><name>{nom}</name>
+  <time>{datetime.utcnow().isoformat()}Z</time></wpt></gpx>"""
+    f = Path.cwd() / "point.gpx"
+    f.write_text(gpx, encoding="utf-8")
+    print(f"✅ {f}")
+
+# ============================================================
+# OPTION 17 — TABLEAU DE BORD
+# ============================================================
+def tableau_de_bord():
+    print("\n📊 TABLEAU DE BORD MAP-CI\n" + "─" * 46)
+    try:
+        d = requests.get("http://ip-api.com/json/?fields=city,country,timezone", timeout=8).json()
+        print(f"📍 Position : {d.get('city')}, {d.get('country')}")
+        print(f"🕐 Fuseau   : {d.get('timezone')}")
+    except Exception:
+        print("📍 Position : (indisponible)")
+    try:
+        d = requests.get(
+            "https://api.open-meteo.com/v1/forecast?latitude=48.85&longitude=2.35"
+            "&current=temperature_2m,weather_code", timeout=8
+        ).json()
+        cur = d["current"]
+        print(f"🌡️  Paris    : {cur['temperature_2m']}°C — {WEATHER_CODES.get(cur['weather_code'], '?')}")
+    except Exception:
+        pass
+    try:
+        d = requests.get("http://api.open-notify.org/iss-now.json", timeout=8).json()["iss_position"]
+        print(f"🛰️  ISS      : {d['latitude']}, {d['longitude']}")
+    except Exception:
+        pass
+    now = datetime.utcnow()
+    ref = datetime(2000, 1, 6, 18, 14)
+    age = ((now - ref).total_seconds() / 86400) % 29.530588853
+    ill = (1 - math.cos(2 * math.pi * age / 29.530588853)) / 2 * 100
+    print(f"🌕 Lune     : {ill:.0f}% illuminée")
+    st = "✅ ON" if iss_alarm.config["enabled"] else "🔕 OFF"
+    print(f"🚨 Alarme   : {st}")
+    ajouter_historique("Dashboard")
+
+# ============================================================
+# OPTION 18 — FAVORIS
+# ============================================================
+def gerer_favoris():
+    fav = load_json(FAVORIS_FILE, [])
+    print("\n📌 FAVORIS")
+    print("─" * 46)
+    if not fav:
+        print("(vide)")
+    for i, f in enumerate(fav, 1):
+        print(f"  {i}. {f['nom']} — {f['lat']}, {f['lon']}")
+    print("\n  A. Ajouter  |  S. Supprimer  |  Entrée. Retour")
+    c = input("👉 ").strip().upper()
+    if c == "A":
+        try:
+            nom = input("Nom : ").strip()
+            lat = float(input("Latitude : "))
+            lon = float(input("Longitude : "))
+            fav.append({"nom": nom, "lat": lat, "lon": lon})
+            save_json(FAVORIS_FILE, fav)
+            print("✅ Ajouté.")
+        except ValueError:
+            print("❌ Invalide.")
+    elif c == "S":
+        try:
+            i = int(input("Numéro : ")) - 1
+            if 0 <= i < len(fav):
+                fav.pop(i); save_json(FAVORIS_FILE, fav)
+                print("✅ Supprimé.")
+        except ValueError:
+            pass
+
+# ============================================================
+# OPTION 19 — GOLDEN HOUR
+# ============================================================
+def golden_hour():
+    try:
+        lat = float(input("Latitude : "))
+    except ValueError:
+        print("❌ Invalide.")
+        return
+    if abs(lat) < 23.5: lever, coucher = ("06:00", "06:30"), ("18:00", "18:30")
+    elif abs(lat) < 45: lever, coucher = ("06:30", "07:00"), ("17:30", "18:00")
+    else: lever, coucher = ("07:30", "08:00"), ("16:30", "17:00")
+    print(f"\n📸 Golden Hour (lat {lat}°)")
+    print(f"🌅 Matin : {lever[0]} – {lever[1]}")
+    print(f"🌇 Soir  : {coucher[0]} – {coucher[1]}")
+
+# ============================================================
+# OPTION 20 — SÉISMES
+# ============================================================
+def seismes_recents():
+    try:
+        d = requests.get(
+            "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/2.5_day.geojson",
+            timeout=10
+        ).json()
+        feats = d.get("features", [])
+        print(f"\n🚨 {len(feats)} séismes (M≥2.5) / 24h\n")
+        for f in feats[:15]:
+            p = f["properties"]
+            t = datetime.fromtimestamp(p["time"] / 1000)
+            print(f"  M{p['mag']:.1f} — {p.get('place','?')} ({t:%d/%m %H:%M})")
+    except Exception as e:
+        print(f"❌ {e}")
+
+# ============================================================
+# OPTION 21 — COORDS ALÉATOIRES
+# ============================================================
+def coords_aleatoires():
+    lat = random.uniform(-90, 90); lon = random.uniform(-180, 180)
+    print(f"\n🎲 {lat:.6f}, {lon:.6f}")
+    print(f"🌐 https://www.openstreetmap.org/?mlat={lat}&mlon={lon}#map=5/{lat}/{lon}")
+
+# ============================================================
+# OPTION 22 — QUIZ CAPITALES
+# ============================================================
+CAPITALES = {
+    "France": "Paris", "Japon": "Tokyo", "Brésil": "Brasilia",
+    "Côte d'Ivoire": "Yamoussoukro", "Canada": "Ottawa",
+    "Australie": "Canberra", "Égypte": "Le Caire", "Maroc": "Rabat",
+    "Sénégal": "Dakar", "Mali": "Bamako", "Espagne": "Madrid",
+    "Italie": "Rome", "Allemagne": "Berlin", "Portugal": "Lisbonne",
+    "Chine": "Pékin", "Inde": "New Delhi", "Russie": "Moscou",
+}
+
+def quiz_capitales():
+    score = 0
+    questions = random.sample(list(CAPITALES.items()), 5)
+    for i, (pays, cap) in enumerate(questions, 1):
+        r = input(f"{i}/5 — Capitale de {pays} ? ").strip()
+        if r.lower() == cap.lower():
+            print("✅"); score += 1
+        else:
+            print(f"❌ C'était {cap}")
+    print(f"\n🎯 Score : {score}/5")
+    ajouter_historique("Quiz capitales", f"{score}/5")
+
+# ============================================================
+# OPTION 23 — CHASSE AU TRÉSOR
+# ============================================================
+def chasse_tresor():
+    print("\n🏴‍☠️  CHASSE AU TRÉSOR — trouvez le point caché !")
+    print("La grille va de 0 à 100 (x = longitude, y = latitude)\n")
+    tx, ty = random.randint(0, 100), random.randint(0, 100)
+    essais = 0
+    while True:
+        try:
+            x = int(input("X : ")); y = int(input("Y : "))
+        except ValueError:
+            continue
+        essais += 1
+        dx, dy = x - tx, y - ty
+        dist = math.hypot(dx, dy)
+        if dist < 5:
+            print(f"\n🎉 TROUVÉ en {essais} essais !")
+            break
+        dirs = []
+        if abs(dx) > 5: dirs.append("Est" if dx < 0 else "Ouest")
+        if abs(dy) > 5: dirs.append("Nord" if dy < 0 else "Sud")
+        print(f"❄️  {dist:.0f} unités — " + (", ".join(dirs) if dirs else "presque !"))
+    ajouter_historique("Chasse trésor", f"{essais} essais")
+
+# ============================================================
+# OPTION 24 — DEVINE LA VILLE
+# ============================================================
+VILLES_INDICES = {
+    "Paris": ["Tour Eiffel", "France", "Seine"],
+    "Tokyo": ["Japon", "Shibuya", "Sakura"],
+    "New York": ["Statue de la Liberté", "USA", "Manhattan"],
+    "Londres": ["Big Ben", "Tamise", "UK"],
+    "Le Caire": ["Pyramides", "Nil", "Égypte"],
+    "Rio": ["Christ Rédempteur", "Brésil", "Carnaval"],
+    "Dakar": ["Sénégal", "Pointe des Almadies", "Téranga"],
+    "Abidjan": ["Côte d'Ivoire", "Cocody", "Lagune Ébrié"],
+}
+
+def devine_ville():
+    ville, indices = random.choice(list(VILLES_INDICES.items()))
+    print("\n🎯 DEVINE LA VILLE\n")
+    for i, ind in enumerate(indices, 1):
+        print(f"  Indice {i} : {ind}")
+        r = input("  Votre réponse : ").strip()
+        if r.lower() == ville.lower():
+            print(f"✅ Bravo ! C'était {ville} (indice {i}/3)")
+            ajouter_historique("Devine ville", f"{ville} - {i}/3")
+            return
+    print(f"\n❌ C'était {ville}")
+
+# ============================================================
+# OPTION 25 — HISTORIQUE
+# ============================================================
+def afficher_historique():
+    hist = load_json(HISTORIQUE_FILE, [])
+    if not hist:
+        print("📭 Vide.")
+        return
+    print(f"\n📝 Historique ({len(hist)})\n")
+    for e in hist[-20:]:
+        print(f"  [{e['date'][:19]}] {e['action']} — {e.get('details', '')}")
+
+# ============================================================
+# OPTION 26 — PARAMÈTRES
+# ============================================================
+def parametres():
+    print("\n⚙️  Paramètres")
+    print("─" * 44)
+    print(f"Version    : {APP_VERSION}")
+    print(f"geopy      : {'✅' if GEOPY_OK else '❌'}")
+    print(f"Pillow     : {'✅' if PIL_OK else '❌'}")
+    print(f"qrcode     : {'✅' if QRCODE_OK else '❌'}")
+    print(f"Cache géo  : {len(_GEO_CACHE)} entrées")
+    print(f"Villes locales : {len(VILLES_LOCALES)}")
+    print(f"Favoris    : {FAVORIS_FILE}")
+    print(f"Historique : {HISTORIQUE_FILE}")
+    print(f"Alarme cfg : {ALARM_CONFIG_FILE}")
+    choix = input("\n🗑️  Vider l'historique ? (o/N) : ").strip().lower()
+    if choix == "o":
+        save_json(HISTORIQUE_FILE, [])
+        print("✅ Vidé.")
+    choix2 = input("🗑️  Vider le cache géocodeur ? (o/N) : ").strip().lower()
+    if choix2 == "o":
+        _GEO_CACHE.clear()
+        save_json(GEO_CACHE_FILE, {})
+        print("✅ Cache vidé.")
+
+
+
+# ============================================================
+# OPTION 30-42 — Modules V8
+# ============================================================
+def config_telegram():
+    if iss_notify is None:
+        print("iss_notify non disponible")
+        return
+    iss_notify.configurer_telegram()
+
+
+def config_discord():
+    if iss_notify is None:
+        print("iss_notify non disponible")
+        return
+    iss_notify.configurer_discord()
+
+
+def export_ical_menu():
+    if iss_notify is None:
+        print("iss_notify non disponible")
+        return
+    ville = input("Ville (Entree = config) : ").strip() or iss_alarm.config.get("lieu", "Abidjan")
+    c = _geocode(ville)
+    if c:
+        lat, lon, _ = c
+    else:
+        lat = iss_alarm.config.get("lat")
+        lon = iss_alarm.config.get("lon")
+    if lat is None:
+        print("Position requise")
+        return
+    from iss_pass import get_next_passes
+    print("Calcul des passages (7 jours)...")
+    passes = get_next_passes(lat, lon, hours=168, min_elevation=0, verbose=False)
+    if not passes:
+        print("Aucun passage")
+        return
+    f = iss_notify.export_ical(passes, lieu=ville)
+    print(f"{len(passes)} passages exportes : {f}")
+    print("   -> Importe ce .ics dans ton calendrier (Google/Outlook)")
+
+
+def carte_ciel():
+    if iss_visibility is None:
+        print("iss_visibility non disponible")
+        return
+    ville = input("Ville (Entree = config) : ").strip() or iss_alarm.config.get("lieu", "Abidjan")
+    c = _geocode(ville)
+    if c:
+        lat, lon, _ = c
+    else:
+        lat = iss_alarm.config.get("lat")
+        lon = iss_alarm.config.get("lon")
+    if lat is None:
+        print("Position requise")
+        return
+    from iss_pass import get_next_passes
+    print("Calcul des passages...")
+    passes = get_next_passes(lat, lon, hours=48, min_elevation=0, verbose=False)
+    if not passes:
+        print("Aucun passage")
+        return
+    print("\n" + str(len(passes)) + " passages :\n")
+    for i, p in enumerate(passes[:5], 1):
+        print(f"  Passage #{i} - {p['risetime']:%d/%m %H:%M} UTC, max {p['max_elevation']:.0f} deg")
+        print(iss_visibility.sky_chart(p))
+        print()
+    ajouter_historique("Carte ciel", ville)
+
+
+def magnitude_passages():
+    if iss_visibility is None:
+        print("iss_visibility non disponible")
+        return
+    lat = iss_alarm.config.get("lat")
+    lon = iss_alarm.config.get("lon")
+    if lat is None:
+        print("Aucune position")
+        return
+    from iss_pass import get_next_passes
+    print("Calcul des passages...")
+    passes = get_next_passes(lat, lon, hours=48, min_elevation=0, verbose=False)
+    if not passes:
+        print("Aucun passage")
+        return
+    print("\nMagnitude estimee :\n")
+    print(f"{'Date':<14}{'Heure':<10}{'Elev':>6}{'Dist km':>10}{'Mag':>8}")
+    print("-" * 55)
+    for p in passes[:10]:
+        mag = iss_visibility.compute_magnitude(p.get("distance_km", 500))
+        mag_str = f"{mag:>6.1f}" if mag is not None else "   N/A"
+        print(f"{p['risetime']:%d/%m %Y}  {p['risetime']:%H:%M}    "
+              f"{p['max_elevation']:>4.0f}  "
+              f"{p.get('distance_km', 0):>8.0f}  "
+              f"{mag_str}  {iss_visibility.magnitude_label(mag)}")
+
+
+def mode_veille():
+    print("\nMode veille autonome (watch_iss.py)")
+    print("-" * 48)
+    print()
+    print("Lance en arriere-plan :")
+    print("  termux-wake-lock")
+    print("  nohup python ~/map-ci/watch_iss.py > ~/.mapci_watch.log 2>&1 &")
+    print()
+    print("Consulter le log :")
+    print("  tail -f ~/.mapci_watch.log")
+    print()
+    print("Arreter :")
+    print("  pkill -f watch_iss.py")
+    print("  termux-wake-unlock")
+
+
+def menu_multi_satellites():
+    if iss_multisat is None:
+        print("iss_multisat non disponible")
+        return
+    print("\nSatellites disponibles (extrait) :")
+    names = iss_multisat.list_available()
+    for n in names[:15]:
+        print(f"  - {n}")
+    print(f"  ... {len(names)} au total\n")
+    target = input("Satellite (iss/hubble/tiangong/noaa/starlink) : ").strip().lower()
+    if not target:
+        return
+    lat = iss_alarm.config.get("lat")
+    lon = iss_alarm.config.get("lon")
+    if lat is None:
+        print("Position non configuree")
+        return
+    print(f"Calcul des passages pour {target}...")
+    passes, info = iss_multisat.get_satellite_passes(target, lat, lon, hours=48)
+    if not passes:
+        print(f"Erreur : {info}")
+        return
+    print(f"\n{info} : {len(passes)} passage(s)\n")
+    for p in passes[:10]:
+        rise_c = iss_multisat.az_to_cardinal(p["az_rise"])
+        set_c = iss_multisat.az_to_cardinal(p["az_set"])
+        print(f"  {p['risetime']:%d/%m %H:%M} -> {p['settime']:%H:%M}  "
+              f"| {p['duration_s']:.0f}s | max {p['max_elevation']:.0f} deg | {rise_c}->{set_c}")
+
+
+def menu_observations():
+    if iss_observe is None:
+        print("iss_observe non disponible")
+        return
+    iss_observe.afficher()
+    print()
+    print("  A. Ajouter | S. Supprimer derniere | R. Reset | Entree. Retour")
+    c = input("Choix : ").strip().upper()
+    if c == "A":
+        iss_observe.marquer_interactif(iss_alarm.config.get("lieu", "Abidjan"))
+    elif c == "S":
+        iss_observe.supprimer_derniere()
+    elif c == "R":
+        iss_observe.reset()
+
+
+def menu_multi_positions():
+    if iss_multipos is None:
+        print("iss_multipos non disponible")
+        return
+    iss_multipos.menu_interactif()
+
+
+def menu_meteo_passage():
+    if iss_visibility is None:
+        print("iss_visibility non disponible")
+        return
+    lat = iss_alarm.config.get("lat")
+    lon = iss_alarm.config.get("lon")
+    if lat is None:
+        print("Aucune position")
+        return
+    from iss_pass import get_next_passes
+    print("Calcul des passages + meteo...")
+    passes = get_next_passes(lat, lon, hours=24, min_elevation=0, verbose=False)
+    if not passes:
+        print("Aucun passage")
+        return
+    print("\nMeteo + visibilite pour les prochains passages :\n")
+    for p in passes[:5]:
+        w = iss_visibility.get_weather(lat, lon, p["risetime"])
+        if w:
+            note, msg = iss_visibility.meteo_verdict(w)
+            print(f"  {p['risetime']:%d/%m %H:%M}  {note}  {msg}")
+        else:
+            print(f"  {p['risetime']:%d/%m %H:%M}  ? Meteo indispo")
+
+
+def menu_rapport_journalier():
+    try:
+        from daily_report import build_report, send_report
+        print(build_report())
+        print()
+        c = input("Envoyer sur Telegram/Discord ? (o/N) : ").strip().lower()
+        if c == "o":
+            send_report()
+    except Exception as e:
+        print(f"Erreur : {e}")
+
+
+def menu_api_rest():
+    print("\nAPI REST locale")
+    print("-" * 44)
+    print("Lance l'API dans un terminal separe :")
+    print("  cd ~/map-ci")
+    print("  python iss_api.py")
+    print()
+    print("Puis teste depuis un autre terminal :")
+    print("  curl http://127.0.0.1:5000/status")
+    print('  curl "http://127.0.0.1:5000/passes?hours=24"')
+
+
+def menu_widget():
+    if iss_notify is None:
+        print("iss_notify non disponible")
+        return
+    lat = iss_alarm.config.get("lat")
+    lon = iss_alarm.config.get("lon")
+    if lat is None:
+        print("Position requise")
+        return
+    from iss_pass import get_next_passes
+    from datetime import datetime
+    passes = get_next_passes(lat, lon, hours=24, min_elevation=0, verbose=False)
+    if not passes:
+        print("Aucun passage")
+        return
+    p = passes[0]
+    now = datetime.now(p["risetime"].tzinfo)
+    delta = (p["risetime"] - now).total_seconds()
+    mins = int(delta // 60)
+    msg = f"Prochain ISS dans {mins} min - {iss_alarm.config.get('lieu', '?')} (max {p['max_elevation']:.0f} deg)"
+    if iss_notify.update_widget(msg):
+        print(f"Widget mis a jour : {msg}")
+    else:
+        print("Termux:API non disponible")
+
+
+
+# ============================================================
+# MENU
+# ============================================================
+MENU = [
+    ("1",  "🔎 Rechercher ville",           rechercher_ville),
+    ("2",  "🗺️  Carte (OSM/Google)",         afficher_carte),
+    ("3",  "📷 Image GPS EXIF",             extraire_gps_exif),
+    ("4",  "🌦️  Meteo actuelle",             meteo_actuelle),
+    ("5",  "📅 Meteo 7 jours",              meteo_7_jours),
+    ("6",  "💨 Qualite de l'air",           qualite_air),
+    ("7",  "📍 Ma position (IP)",           ma_position_ip),
+    ("8",  "🧭 Distance + itineraire",      distance_itineraire),
+    ("9",  "🛰️  Position ISS",               position_iss),
+    ("P",  "🛰️  Prochains passages ISS",     passages_iss),
+    ("10", "🌐 Fuseaux horaires",           fuseaux_horaires),
+    ("11", "🏔️  Altitude d'un lieu",         altitude_lieu),
+    ("12", "🏛️  Points d'interet",           points_interet),
+    ("13", "🌕 Phase de la Lune",           phase_lune),
+    ("14", "🚀 Lancements spatiaux",        lancements_spatiaux),
+    ("15", "📋 QR code position",           qr_code_position),
+    ("16", "📤 Export GPX",                 export_gpx),
+    ("17", "📊 Tableau de bord",            tableau_de_bord),
+    ("18", "📌 Favoris",                    gerer_favoris),
+    ("19", "📸 Golden hour",                golden_hour),
+    ("20", "🚨 Seismes recents",            seismes_recents),
+    ("21", "🎲 Coords aleatoires",          coords_aleatoires),
+    ("22", "🎮 Quiz capitales",             quiz_capitales),
+    ("23", "🏴‍☠️  Chasse au tresor",          chasse_tresor),
+    ("24", "🎯 Jeu devine ville",           devine_ville),
+    ("25", "📝 Historique",                 afficher_historique),
+    ("26", "⚙️  Parametres",                 parametres),
+    ("27", "🚨 Alarme ISS (config)",        iss_alarm.configurer),
+    ("28", "🔔 Statut alarme ISS",          iss_alarm.statut),
+    ("29", "🧪 Tester l'alarme",            iss_alarm.tester),
+    ("30", "Config Telegram",              config_telegram),
+    ("31", "Config Discord",               config_discord),
+    ("32", "Export iCal (7 jours)",        export_ical_menu),
+    ("33", "Carte ASCII du ciel",          carte_ciel),
+    ("34", "Magnitude estimee",            magnitude_passages),
+    ("35", "Mode veille",                  mode_veille),
+    ("36", "Multi-satellites",             menu_multi_satellites),
+    ("37", "Mes observations",             menu_observations),
+    ("38", "Multi-positions",              menu_multi_positions),
+    ("39", "Meteo des passages",           menu_meteo_passage),
+    ("40", "Rapport journalier",           menu_rapport_journalier),
+    ("41", "API REST (info)",              menu_api_rest),
+    ("42", "Widget permanent",             menu_widget),
+    ("0",  "Quitter",                      None),
+]
+
+def show_menu():
+    clear()
+    w = shutil.get_terminal_size((80, 30)).columns
+    width = min(54, max(44, w - 2))
+
+    print_header()
+    if iss_alarm.config["enabled"]:
+        if iss_alarm.config.get("lat") is not None:
+            st = f"🚨 ISS ALARME ON — {iss_alarm.config.get('lieu','?')}"
+        else:
+            st = "⚠️  ISS alarme ON mais SANS POSITION (option 27)"
+    else:
+        st = "🔕 ISS alarme OFF"
+    print(f"  {st}".ljust(width))
+
+    if (iss_alarm.config.get("enabled")
+            and iss_alarm.config.get("lat") is not None
+            and iss_alerts is not None):
+        try:
+            info = iss_alerts.next_pass_summary(
+                iss_alarm.config["lat"], iss_alarm.config["lon"]
+            )
+            if info:
+                print(f"  {info}".ljust(width))
+        except Exception:
+            pass
+    print()
+
+    for key, label, _ in MENU:
+        print(f"  {key:>2}. {label}")
+
+    print("  " + "─" * (width - 4))
+    return input("👉 Choix : ").strip().upper()
+
+def main():
+    if iss_alarm.config.get("enabled"):
+        if iss_alarm.config.get("lat") is None:
+            print("\n⚠️  L'alarme ISS est activée mais sans position.")
+            print("   → Fais l'option 27 avec 'M' pour saisir les coordonnées.\n")
+            time.sleep(2)
+        else:
+            iss_alarm.start()
+
+    while True:
+        try:
+            choice = show_menu()
+        except (EOFError, KeyboardInterrupt):
+            print("\n👋 Au revoir !")
+            break
+
+        if choice == "0":
+            iss_alarm.stop()
+            print("👋 Au revoir !")
+            break
+
+        action = next((f for k, _, f in MENU if k == choice), None)
+        if action is None:
+            print("\n❌ Choix invalide.")
+            pause()
+            continue
+
+        try:
+            print()
+            action()
+        except Exception as e:
+            print(f"\n❌ Erreur : {e}")
+        pause()
 
 if __name__ == "__main__":
     try:
-        main_menu()
+        main()
     except KeyboardInterrupt:
-        print("\n👋 Bye !")
+        iss_alarm.stop()
+        print("\n👋 Interrompu.")

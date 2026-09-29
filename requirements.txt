@@ -1,2 +1,6 @@
-requests>=2.31.0
-rich>=13.0.02
+requests>=2.28
+geopy>=2.3
+Pillow>=9.0
+qrcode[pil]>=7.4
+skyfield>=1.45
+flask>=3.0

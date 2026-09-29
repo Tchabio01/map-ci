@@ -1,10 +1,34 @@
+# Python
 __pycache__/
-*.pyc
-.mapci/
-favoris.txt
-history.log
-config.json
-*.gpx
-*.kml
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+venv/
+.venv/
+
+# Backups
+*.bak
+*.bak2
+*.bak3
+*.bak4
+mapci.py.bak*
+
+# Fichiers générés
+*.ics
+qr_*.png
+point.gpx
+test.ics
+screenshot.txt
+
+# Données utilisateur (configs locales)
+.mapci_*
+*.log
+
+# OS
 .DS_Store
-*.swp
+Thumbs.db
+de421.bsp
+*.bsp
+patch_*.py
+test_iss.py
+test_version.py
