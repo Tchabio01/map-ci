@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.mapci/
+favoris.txt
+history.log
+config.json
+*.gpx
+*.kml
+.DS_Store
+*.swp
