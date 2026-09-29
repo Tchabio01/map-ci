@@ -1,0 +1,14 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, system-ui, sans-serif; background: #0a0e27; color: #e0e0e0; }
+#header { padding: 15px 20px; background: #151b3d; border-bottom: 2px solid #2a3a6b; }
+#header h1 { font-size: 1.4em; color: #4fc3f7; }
+#status { font-size: 0.9em; margin-top: 5px; color: #a0a0a0; }
+#map { height: 60vh; width: 100%; }
+#panels { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; padding: 15px; }
+.panel { background: #151b3d; border-radius: 10px; padding: 15px; border: 1px solid #2a3a6b; }
+.panel h3 { color: #4fc3f7; margin-bottom: 10px; font-size: 1.1em; }
+#iss-pos, #passes { font-size: 0.9em; line-height: 1.6; }
+.pass-item { padding: 8px; margin: 5px 0; background: #0f1533; border-radius: 5px; border-left: 3px solid #4fc3f7; }
+.pass-item.highlight { border-left-color: #ffd54f; }
+.pass-item.best { border-left-color: #66bb6a; }
+@media (max-width: 768px) { #panels { grid-template-columns: 1fr; } }
