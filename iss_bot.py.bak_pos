@@ -172,40 +172,18 @@ def cmd_status():
 
 
 def cmd_iss():
-    """Position ISS via Skyfield (local, pas d'API)."""
     try:
-        from iss_pass import get_iss_tle, TS
-        from skyfield.api import EarthSatellite
-        import requests as _r
-        # Essaie Skyfield d'abord (fiable)
-        try:
-            tle = get_iss_tle(verbose=False)
-            if tle:
-                sat = EarthSatellite(tle[0], tle[1], "ISS", TS)
-                geo = sat.at(TS.now()).subpoint()
-                lat = geo.latitude.degrees
-                lon = geo.longitude.degrees
-                alt = geo.elevation.km
-                source = "Skyfield (local)"
-            else:
-                raise Exception("TLE indisponible")
-        except Exception:
-            # Fallback API alternative (wheretheiss.at)
-            r = _r.get("https://api.wheretheiss.at/v1/satellites/25544", timeout=10).json()
-            lat = r["latitude"]
-            lon = r["longitude"]
-            alt = r.get("altitude", 408)
-            source = "wheretheiss.at"
-
+        d = requests.get("http://api.open-notify.org/iss-now.json", timeout=10).json()
+        p = d["iss_position"]
+        lat, lon = p["latitude"], p["longitude"]
         txt = ("🛰️ *Position ISS*\n\n"
-               "Lat : `" + str(round(lat, 4)) + "`\n"
-               "Lon : `" + str(round(lon, 4)) + "`\n"
-               "Alt : " + str(round(alt)) + " km\n"
-               "Vitesse : ~27600 km/h\n"
-               "Source : _" + source + "_\n\n"
-               "[Voir sur OSM](https://www.openstreetmap.org/?mlat=" + str(lat) + "&mlon=" + str(lon) + "#map=3/" + str(lat) + "/" + str(lon) + ")")
+               "Lat : `" + lat + "`\n"
+               "Lon : `" + lon + "`\n"
+               "Alt : ~408 km\n"
+               "Vitesse : ~27600 km/h\n\n"
+               "[Voir sur OSM](https://www.openstreetmap.org/?mlat=" + lat + "&mlon=" + lon + "#map=3/" + lat + "/" + lon + ")")
         kb = {"inline_keyboard": [
-            [{"text": "Carte OSM", "url": "https://www.openstreetmap.org/?mlat=" + str(lat) + "&mlon=" + str(lon) + "#map=3/" + str(lat) + "/" + str(lon)}],
+            [{"text": "Carte OSM", "url": "https://www.openstreetmap.org/?mlat=" + lat + "&mlon=" + lon + "#map=3/" + lat + "/" + lon}],
             [{"text": "Menu", "callback_data": "menu"}],
         ]}
         return txt, kb
@@ -743,59 +721,6 @@ def handle_callback(token, chat_id, mid, data):
             t, k = cmd_terminal(page)
         elif data.startswith("term_"):
             t, k = cmd_term_exec(data[5:])
-        elif data == "lune":
-            t, k = cmd_lune()
-        elif data == "achievements":
-            t, k = cmd_achievements()
-        elif data == "eclipses":
-            t, k = cmd_eclipses()
-        elif data == "meteors":
-            t, k = cmd_meteors()
-        elif data == "planetes":
-            t, k = cmd_planetes()
-        elif data == "aujourdhui":
-            t, k = cmd_aujourdhui()
-        elif data == "demain":
-            t, k = cmd_demain()
-        elif data == "semaine":
-            t, k = cmd_semaine()
-        elif data == "charts":
-            t, k = cmd_charts()
-        elif data == "track":
-            t, k = cmd_track()
-        elif data == "report":
-            r = cmd_report()
-            if isinstance(r, tuple) and len(r) == 3:
-                send_doc(token, chat_id, r[1], r[2])
-                return
-            t, k = r
-        elif data == "live":
-            t, k = cmd_live()
-        elif data == "stats":
-            t, k = cmd_stats()
-        elif data == "prefs":
-            t, k = cmd_prefs()
-        elif data == "kids":
-            t, k = cmd_kids()
-        elif data == "kids_fact":
-            t, k = cmd_kids_fact()
-        elif data == "ai_help":
-            t, k = cmd_ai_help()
-        elif data == "earth":
-            r = cmd_earth()
-            if isinstance(r, tuple) and len(r) == 4 and r[0] == "PHOTO":
-                _, url, caption, kb2 = r
-                send_photo(token, chat_id, url, caption, kb2)
-                return
-            t, k = r
-        elif data == "multisat":
-            t, k = cmd_multisat()
-        elif data.startswith("sat_"):
-            t, k = cmd_satellite(data[4:])
-        elif data == "multipos":
-            t, k = cmd_multipos() if "cmd_multipos" in dir() else ("Module indisponible", KB_BACK)
-        elif data == "quiz":
-            t, k = cmd_quiz()
         else:
             t, k = "Action inconnue : " + data, KB_BACK
     except Exception as e:
