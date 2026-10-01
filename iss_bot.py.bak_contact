@@ -111,34 +111,26 @@ def edit(token, chat_id, mid, text, kb=None):
 KB_BACK = {"inline_keyboard": [[{"text": "Menu", "callback_data": "menu"}]]}
 
 KB_MAIN = {"inline_keyboard": [
-    [{"text": "🛰️ ISS Live", "callback_data": "iss"},
-     {"text": "🚀 Passages", "callback_data": "passes"}],
-    [{"text": "⏱️ Countdown", "callback_data": "countdown"},
-     {"text": "📊 Statut", "callback_data": "status"}],
-    [{"text": "📅 Aujourd'hui", "callback_data": "aujourdhui"},
-     {"text": "📅 Demain", "callback_data": "demain"}],
-    [{"text": "🌦️ Meteo solaire", "callback_data": "solar"},
-     {"text": "🌕 Phase Lune", "callback_data": "lune"}],
-    [{"text": "📻 Radio ISS", "callback_data": "radio"},
-     {"text": "📡 Contact ISS", "callback_data": "contact"}],
-    [{"text": "🛰️ Multi-satellites", "callback_data": "multisat"},
-     {"text": "🗺️ Trajectoire", "callback_data": "track"}],
-    [{"text": "📊 Graphiques", "callback_data": "charts"},
-     {"text": "📄 Rapport", "callback_data": "report"}],
-    [{"text": "🎬 Lives NASA", "callback_data": "live"},
-     {"text": "🌍 Vue Terre", "callback_data": "earth"}],
-    [{"text": "🎮 Quiz", "callback_data": "quiz"},
-     {"text": "📈 Mes stats", "callback_data": "stats"}],
-    [{"text": "🏆 Achievements", "callback_data": "achievements"},
-     {"text": "🎯 Eclipses", "callback_data": "eclipses"}],
-    [{"text": "☄️ Meteors", "callback_data": "meteors"},
-     {"text": "🪐 Planetes", "callback_data": "planetes"}],
-    [{"text": "🌟 Mode enfants", "callback_data": "kids"},
-     {"text": "🤖 IA conversationnelle", "callback_data": "ai_help"}],
-    [{"text": "⚙️ Preferences", "callback_data": "prefs"},
-     {"text": "🖥️ Menu terminal", "callback_data": "term_page_0"}],
-    [{"text": "📝 Todo list", "url": "http://127.0.0.1:8080/todo"},
-     {"text": "🌐 Interface Web", "url": "http://127.0.0.1:8080/"}],
+    [{"text": "ISS", "callback_data": "iss"},
+     {"text": "Passages", "callback_data": "passes"}],
+    [{"text": "Countdown", "callback_data": "countdown"},
+     {"text": "Statut", "callback_data": "status"}],
+    [{"text": "Aujourd'hui", "callback_data": "aujourdhui"},
+     {"text": "Demain", "callback_data": "demain"}],
+    [{"text": "Radio ISS", "callback_data": "radio"},
+     {"text": "Meteo solaire", "callback_data": "solar"}],
+    [{"text": "Trajectoire", "callback_data": "track"},
+     {"text": "Graphiques", "callback_data": "charts"}],
+    [{"text": "Rapport", "callback_data": "report"},
+     {"text": "Lives NASA", "callback_data": "live"}],
+    [{"text": "Multi-satellites", "callback_data": "multisat"},
+     {"text": "Multi-positions", "callback_data": "multipos"}],
+    [{"text": "Quiz", "callback_data": "quiz"},
+     {"text": "Stats", "callback_data": "stats"}],
+    [{"text": "Preferences", "callback_data": "prefs"},
+     {"text": "IA conversationnelle", "callback_data": "ai_help"}],
+    [{"text": "Menu terminal", "callback_data": "term_page_0"}],
+    [{"text": "Interface Web", "url": "http://127.0.0.1:8080/"}],
 ]}
 
 
@@ -583,9 +575,7 @@ def handle_text(token, chat_id, text):
     print("  -> cmd = " + repr(cmd))
 
     if cmd in ("/start", "/menu"):
-        t, k = ("🛰️ *MAP-CI Tchabio*\n\n"
-                "👋 Que veux-tu faire aujourd'hui ?\n\n"
-                "🌐 _Interface Web : http://127.0.0.1:8080_"), KB_MAIN
+        t, k = "🛰️ *MAP-CI Tchabio*\n\nQue veux-tu faire ?", KB_MAIN
     elif cmd in ("/help", "/aide"):
         t, k = cmd_help()
     elif cmd == "/iss":
@@ -651,10 +641,7 @@ def handle_callback(token, chat_id, mid, data):
 
     try:
         if data == "menu":
-            t, k = ("🛰️ *MAP-CI Tchabio*\n\n"
-                    "👋 Que veux-tu faire aujourd'hui ?\n\n"
-                    "🌐 _Interface Web : http://127.0.0.1:8080_\n"
-                    "📱 _App installable : Menu Chrome → Ajouter à l'écran_"), KB_MAIN
+            t, k = "🛰️ *MAP-CI Tchabio*\n\nQue veux-tu faire ?", KB_MAIN
         elif data == "status":
             t, k = cmd_status()
         elif data == "iss":

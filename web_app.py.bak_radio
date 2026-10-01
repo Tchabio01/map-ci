@@ -19,16 +19,6 @@ def _load_alarm():
 def index():
     return render_template("index.html")
 
-@app.route("/contact")
-def contact():
-    return render_template("contact.html")
-
-
-@app.route("/radio")
-def radio():
-    return render_template("radio.html")
-
-
 @app.route("/api/status")
 def api_status():
     cfg = _load_alarm()

@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Radio ISS — MAP-CI</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, system-ui, sans-serif; background: #0a0e27; color: #e0e0e0; }
+
+header { background: #151b3d; padding: 12px 16px; border-bottom: 2px solid #2a3a6b;
+         display: flex; align-items: center; gap: 12px; position: sticky; top: 0; z-index: 100; }
+header h1 { font-size: 1.1em; color: #4fc3f7; }
+header a { color: #4fc3f7; text-decoration: none; font-size: 0.9em; }
+
+.status-bar { background: #0f1533; padding: 8px 16px; font-size: 0.85em;
+             border-bottom: 1px solid #2a3a6b; display: flex; gap: 16px; flex-wrap: wrap; }
+.status-bar b { color: #4fc3f7; }
+.countdown { color: #ffd54f; font-weight: bold; }
+
+.freq-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            gap: 8px; padding: 12px; background: #0f1533; }
+.freq-btn { background: #1a2350; border: 1px solid #2a3a6b; color: #e0e0e0;
+           padding: 10px; border-radius: 8px; font-size: 0.85em; cursor: pointer;
+           text-align: center; transition: all 0.15s; }
+.freq-btn:hover, .freq-btn.active { background: #4fc3f7; color: #0a0e27; border-color: #4fc3f7; }
+.freq-btn .label { font-weight: bold; display: block; font-size: 1em; margin-bottom: 2px; }
+
+.sdr-tabs { display: flex; gap: 6px; padding: 10px 12px; background: #0f1533;
+           overflow-x: auto; border-bottom: 1px solid #2a3a6b; }
+.sdr-tab { background: #1a2350; border: 1px solid #2a3a6b; color: #a0a0a0;
+          padding: 6px 12px; border-radius: 6px; font-size: 0.8em; cursor: pointer;
+          white-space: nowrap; transition: all 0.15s; }
+.sdr-tab.active { background: #4fc3f7; color: #0a0e27; border-color: #4fc3f7; }
+
+#sdr-frame { width: 100%; height: 60vh; min-height: 500px; border: none; background: #000; }
+
+.info-block { padding: 14px; background: #0f1533; margin: 10px; border-radius: 8px;
+             border-left: 3px solid #4fc3f7; font-size: 0.85em; line-height: 1.6; }
+.info-block h3 { color: #4fc3f7; margin-bottom: 8px; font-size: 1em; }
+.info-block code { background: #1a2350; padding: 2px 6px; border-radius: 4px;
+                  color: #ffd54f; font-size: 0.9em; }
+
+.fallback { padding: 20px; background: #1a2350; border-radius: 8px; margin: 10px;
+           text-align: center; color: #a0a0a0; font-size: 0.9em; }
+.fallback a { color: #4fc3f7; font-weight: bold; }
+</style>
+</head>
+<body>
+
+<header>
+  <a href="/">← Retour</a>
+  <h1>📻 Radio ISS</h1>
+</header>
+
+<div class="status-bar">
+  <span>🛰️ <b id="iss-pos">Chargement...</b></span>
+  <span>⏱️ <span class="countdown" id="countdown">--:--:--</span> avant prochain passage</span>
+</div>
+
+<div class="freq-grid">
+  <div class="freq-btn active" data-freq="145.800" data-mode="fm">
+    <span class="label">145.800 MHz</span>Voix ARISS (FM-N)
+  </div>
+  <div class="freq-btn" data-freq="145.825" data-mode="fm">
+    <span class="label">145.825 MHz</span>APRS (packets)
+  </div>
+  <div class="freq-btn" data-freq="145.800" data-mode="usb">
+    <span class="label">145.800 MHz</span>SSTV (images)
+  </div>
+  <div class="freq-btn" data-freq="437.550" data-mode="usb">
+    <span class="label">437.550 MHz</span>Data UHF
+  </div>
+</div>
+
+<div class="sdr-tabs">
+  <div class="sdr-tab active" data-url="http://websdr.ewi.utwente.nl:8901/">🌍 Twente (Pays-Bas)</div>
+  <div class="sdr-tab" data-url="http://sdr.kfs.fm:8901/">🇺🇸 KFS (Californie)</div>
+  <div class="sdr-tab" data-url="http://websdr.serversfm.com:8901/">🇬🇧 Farnham (UK)</div>
+  <div class="sdr-tab" data-url="https://network.satnogs.org/observations/">🛰️ SATNOGS</div>
+</div>
+
+<div id="sdr-container">
+  <iframe id="sdr-frame"
+    src="http://websdr.ewi.utwente.nl:8901/?tune=145.8fm"
+    allow="autoplay; microphone; speaker"
+    sandbox="allow-scripts allow-same-origin allow-forms allow-popups">
+  </iframe>
+  <div class="fallback" id="fallback" style="display:none">
+    ⚠️ Impossible d'embarquer le WebSDR ici (restriction de sécurité).<br>
+    <a href="#" id="direct-link" target="_blank">Ouvrir directement dans un nouvel onglet →</a>
+  </div>
+</div>
+
+<div class="info-block">
+  <h3>🎧 Comment écouter</h3>
+  1. Vérifie le <b>compte à rebours</b> ci-dessus (il faut un passage ISS)<br>
+  2. Sur le WebSDR, la fréquence est réglée à <code>145.800 MHz</code><br>
+  3. Mode : <code>FM-N</code> (bande étroite) pour la voix<br>
+  4. Active le <b>bouton "Doppler"</b> sur le WebSDR<br>
+  5. Monte le volume et écoute ! 🔊
+</div>
+
+<div class="info-block">
+  <h3>ℹ️ À savoir</h3>
+  • L'ISS <b>n'émet pas en permanence</b> (silence 90% du temps)<br>
+  • Les meilleurs moments : <b>contacts ARISS</b> (écoles ↔ astronautes)<br>
+  • Les passages doivent être > <b>10° d'élévation</b> pour bien capter<br>
+  • Le <b>Doppler</b> est indispensable : la fréquence dérive<br>
+  • Fréquence agenda : <a href="https://www.ariss.org/" target="_blank" style="color:#4fc3f7">ariss.org</a>
+</div>
+
+<script>
+// État
+let currentSdrUrl = "http://websdr.ewi.utwente.nl:8901/";
+let currentFreq = "145.800";
+let currentMode = "fm";
+
+// Actualise l'iframe avec la fréquence
+function updateSdr() {
+  const freqParam = currentFreq + (currentMode === "fm" ? "fm" : "");
+  const url = currentSdrUrl + "?tune=" + freqParam;
+  const frame = document.getElementById('sdr-frame');
+  const direct = document.getElementById('direct-link');
+  frame.src = url;
+  direct.href = url;
+
+  // Détecte si l'iframe n'a pas chargé (fallback)
+  setTimeout(() => {
+    try {
+      // Si accès refusé, on affiche le fallback
+      const doc = frame.contentDocument;
+      if (!doc || doc.body === null) {
+        document.getElementById('fallback').style.display = 'block';
+      }
+    } catch (e) {
+      // Cross-origin → l'iframe a chargé mais on ne peut pas la lire (OK)
+    }
+  }, 3000);
+}
+
+// Fréquences
+document.querySelectorAll('.freq-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.freq-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    currentFreq = btn.dataset.freq;
+    currentMode = btn.dataset.mode;
+    updateSdr();
+  });
+});
+
+// WebSDR sources
+document.querySelectorAll('.sdr-tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.sdr-tab').forEach(t => t.classList.remove('active'));
+    tab.classList.add('active');
+    currentSdrUrl = tab.dataset.url;
+    updateSdr();
+  });
+});
+
+// Position ISS + countdown
+async function updateISS() {
+  try {
+    const r = await fetch('/api/iss-now');
+    const d = await r.json();
+    document.getElementById('iss-pos').textContent =
+      d.lat.toFixed(2) + '°, ' + d.lon.toFixed(2) + '°';
+  } catch (e) { console.error(e); }
+}
+
+async function updateCountdown() {
+  try {
+    const r = await fetch('/api/passes?hours=24');
+    const passes = await r.json();
+    if (!passes.length) {
+      document.getElementById('countdown').textContent = 'Aucun passage';
+      return;
+    }
+    const next = passes[0];
+    const rt = new Date(next.risetime);
+    const delta = Math.max(0, (rt - new Date()) / 1000);
+    const h = Math.floor(delta / 3600);
+    const m = Math.floor((delta % 3600) / 60);
+    const s = Math.floor(delta % 60);
+    document.getElementById('countdown').textContent =
+      String(h).padStart(2, '0') + ':' +
+      String(m).padStart(2, '0') + ':' +
+      String(s).padStart(2, '0');
+  } catch (e) { console.error(e); }
+}
+
+// Démarrage
+updateSdr();
+updateISS();
+updateCountdown();
+setInterval(updateISS, 5000);
+setInterval(updateCountdown, 1000);
+</script>
+
+</body>
+</html>

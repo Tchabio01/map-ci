@@ -1,0 +1,680 @@
+#!/usr/bin/env python3
+"""iss_bot.py - MAP-CI Bot V2 - Ultra moderne"""
+import json
+import time
+import requests
+from datetime import datetime, timezone
+from pathlib import Path
+
+try:
+    import iss_nlp
+except Exception:
+    iss_nlp = None
+try:
+    import iss_radio
+except Exception:
+    iss_radio = None
+try:
+    import iss_report
+except Exception:
+    iss_report = None
+try:
+    import iss_groundtrack
+except Exception:
+    iss_groundtrack = None
+try:
+    import iss_kids
+except Exception:
+    iss_kids = None
+try:
+    import iss_live
+except Exception:
+    iss_live = None
+
+TG_CONFIG = Path.home() / ".mapci_telegram.json"
+ALARM_CONFIG = Path.home() / ".mapci_alarm.json"
+QUIZ_STATE = Path.home() / ".mapci_quiz_state.json"
+
+QUIZ_QUESTIONS = [
+    {"q": "Vitesse de l ISS ?", "opts": ["7.66 km/s", "1 km/s", "30 km/s"], "ans": 0},
+    {"q": "Duree d un tour de Terre ?", "opts": ["45 min", "92 min", "6 h"], "ans": 1},
+    {"q": "Altitude de l ISS ?", "opts": ["200 km", "408 km", "1000 km"], "ans": 1},
+    {"q": "Habitants sur l ISS (2024) ?", "opts": ["3", "7", "15"], "ans": 1},
+    {"q": "Habitee depuis ?", "opts": ["1998", "2000", "2010"], "ans": 1},
+    {"q": "Pays constructeurs ?", "opts": ["3", "5", "15"], "ans": 2},
+    {"q": "Masse de l ISS ?", "opts": ["42 t", "420 t", "4200 t"], "ans": 1},
+    {"q": "Premier module envoye par ?", "opts": ["USA", "Russie", "Chine"], "ans": 1},
+]
+
+
+def load_tg():
+    if not TG_CONFIG.exists():
+        return None
+    try:
+        return json.loads(TG_CONFIG.read_text())
+    except Exception:
+        return None
+
+
+def load_alarm():
+    if ALARM_CONFIG.exists():
+        try:
+            return json.loads(ALARM_CONFIG.read_text())
+        except Exception:
+            pass
+    return {}
+
+
+def api(token, method, data=None, files=None, timeout=15):
+    try:
+        if files:
+            r = requests.post("https://api.telegram.org/bot" + token + "/" + method,
+                            data=data, files=files, timeout=timeout)
+        else:
+            r = requests.post("https://api.telegram.org/bot" + token + "/" + method,
+                            json=data, timeout=timeout)
+        return r.json()
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def send(token, chat_id, text, keyboard=None, markdown=True):
+    data = {"chat_id": chat_id, "text": text}
+    if markdown:
+        data["parse_mode"] = "Markdown"
+    data["disable_web_page_preview"] = True
+    if keyboard:
+        data["reply_markup"] = json.dumps(keyboard)
+    return api(token, "sendMessage", data)
+
+
+def edit(token, chat_id, msg_id, text, keyboard=None, markdown=True):
+    data = {"chat_id": chat_id, "message_id": msg_id, "text": text}
+    if markdown:
+        data["parse_mode"] = "Markdown"
+    if keyboard:
+        data["reply_markup"] = json.dumps(keyboard)
+    return api(token, "editMessageText", data)
+
+
+def send_document(token, chat_id, filepath, caption=""):
+    try:
+        with open(filepath, "rb") as f:
+            return api(token, "sendDocument",
+                      data={"chat_id": chat_id, "caption": caption},
+                      files={"document": f}, timeout=30)
+    except Exception:
+        return {"ok": False}
+
+
+KB_MAIN = {
+    "inline_keyboard": [
+        [{"text": "🛰️ Position ISS", "callback_data": "iss"},
+         {"text": "🚀 Prochains passages", "callback_data": "passes"}],
+        [{"text": "⏱️ Countdown live", "callback_data": "countdown"},
+         {"text": "📊 Statut alarme", "callback_data": "status"}],
+        [{"text": "🌍 Vue de la Terre", "callback_data": "earth"},
+         {"text": "☀️ Meteo spatiale", "callback_data": "solar"}],
+        [{"text": "🛰️ Multi-satellites", "callback_data": "multisat"},
+         {"text": "📅 Export iCal", "callback_data": "ical"}],
+        [{"text": "🎮 Quiz spatial", "callback_data": "quiz"},
+         {"text": "📈 Mes stats", "callback_data": "stats"}],
+        [{"text": "📻 Radio ISS", "callback_data": "radio"},
+         {"text": "🗺️ Trajectoire", "callback_data": "track"}],
+        [{"text": "📄 Rapport", "callback_data": "report"},
+         {"text": "🎬 Lives NASA", "callback_data": "live"}],
+        [{"text": "🌟 Mode enfants", "callback_data": "kids"},
+         {"text": "🤖 IA conversationnelle", "callback_data": "ai_help"}],
+        [{"text": "🌐 Interface Web", "url": "http://127.0.0.1:8080/"}],
+    ]
+}
+
+KB_BACK = {"inline_keyboard": [[{"text": "◀️ Menu", "callback_data": "menu"}]]}
+
+
+def cmd_menu():
+    return "🛰️ *MAP-CI Tchabio* - Que veux-tu faire ?\n\nUtilise les boutons 👇", KB_MAIN
+
+
+def cmd_status():
+    cfg = load_alarm()
+    if not cfg.get("enabled"):
+        return "🔕 *Alarme ISS desactivee*\n\nLance option 27 dans MAP-CI.", KB_BACK
+    txt = ("🚨 *Alarme ISS active*\n\n"
+           "📍 Lieu : " + str(cfg.get("lieu", "?")) + "\n"
+           "📡 Coords : `" + str(cfg.get("lat")) + ", " + str(cfg.get("lon")) + "`\n"
+           "⏱️ Seuil : " + str(cfg.get("seuil_minutes")) + " min\n"
+           "⏳ Duree mini : " + str(cfg.get("duree_min")) + " s")
+    return txt, KB_BACK
+
+
+def cmd_passes():
+    cfg = load_alarm()
+    lat = cfg.get("lat"); lon = cfg.get("lon")
+    if lat is None:
+        return "❌ Position non configuree", KB_BACK
+    try:
+        from iss_pass import get_next_passes
+        passes = get_next_passes(lat, lon, hours=48, min_elevation=0, verbose=False)
+        if not passes:
+            return "❌ Aucun passage dans les 48h", KB_BACK
+        lines = ["🛰️ *" + str(len(passes)) + " prochains passages ISS*\n"]
+        now = datetime.now(timezone.utc)
+        for i, p in enumerate(passes[:8], 1):
+            rt = p["risetime"]
+            delta = (rt - now).total_seconds() / 60
+            h = int(delta // 60); m = int(delta % 60)
+            quand = "dans " + str(h) + "h" + str(m).zfill(2) if h else "dans " + str(m) + " min"
+            emoji = "🟢" if p["max_elevation"] > 60 else "🟡" if p["max_elevation"] > 20 else "⚪"
+            lines.append(emoji + " *" + str(i) + ".* " + rt.strftime("%d/%m %H:%M") + " UTC — _" + quand + "_\n"
+                        "   max " + str(round(p["max_elevation"])) + "deg | "
+                        + str(p.get("cardinal_rise", "?")) + "->" + str(p.get("cardinal_set", "?")) + " | "
+                        + str(round(p["duration_s"])) + "s")
+        return "\n".join(lines), KB_BACK
+    except Exception as e:
+        return "❌ Erreur : " + str(e), KB_BACK
+
+
+def cmd_iss():
+    try:
+        d = requests.get("http://api.open-notify.org/iss-now.json", timeout=10).json()
+        p = d["iss_position"]
+        ts = datetime.fromtimestamp(d["timestamp"], tz=timezone.utc)
+        lat, lon = p["latitude"], p["longitude"]
+        txt = ("🛰️ *Position ISS*\n\n"
+               "📡 Lat : `" + lat + "deg`\n"
+               "📡 Lon : `" + lon + "deg`\n"
+               "🚀 Alt : ~408 km\n"
+               "⚡ Vitesse : ~27600 km/h\n"
+               "⏰ " + ts.strftime("%H:%M:%S") + " UTC\n\n"
+               "[📍 Voir sur OSM](https://www.openstreetmap.org/?mlat=" + lat + "&mlon=" + lon + "#map=3/" + lat + "/" + lon + ")")
+        kb = {"inline_keyboard": [
+            [{"text": "🗺️ Carte OSM", "url": "https://www.openstreetmap.org/?mlat=" + lat + "&mlon=" + lon + "#map=3/" + lat + "/" + lon}],
+            [{"text": "◀️ Menu", "callback_data": "menu"}],
+        ]}
+        return txt, kb
+    except Exception as e:
+        return "❌ Erreur : " + str(e), KB_BACK
+
+
+def cmd_countdown():
+    cfg = load_alarm()
+    lat = cfg.get("lat"); lon = cfg.get("lon")
+    if lat is None:
+        return "❌ Position non configuree", KB_BACK
+    try:
+        from iss_pass import get_next_passes
+        passes = get_next_passes(lat, lon, hours=24, min_elevation=0, verbose=False)
+        if not passes:
+            return "Aucun passage dans les 24h", KB_BACK
+        p = passes[0]
+        rt = p["risetime"]
+        now = datetime.now(timezone.utc)
+        delta = max(0, (rt - now).total_seconds())
+        h = int(delta // 3600); m = int((delta % 3600) // 60); s = int(delta % 60)
+        emoji = "🟢" if p["max_elevation"] > 60 else "🟡" if p["max_elevation"] > 20 else "⚪"
+        txt = ("⏱️ *Prochain passage ISS*\n\n"
+               "🕐 *" + str(h).zfill(2) + ":" + str(m).zfill(2) + ":" + str(s).zfill(2) + "*\n\n"
+               + emoji + " Max " + str(round(p["max_elevation"])) + "deg\n"
+               "🧭 " + str(p.get("cardinal_rise", "?")) + " -> " + str(p.get("cardinal_set", "?")) + "\n"
+               "⏳ Duree " + str(round(p["duration_s"])) + "s\n"
+               "📍 " + str(cfg.get("lieu", "?")) + "\n\n"
+               "🕒 Risetime : " + rt.strftime("%d/%m %H:%M:%S") + " UTC")
+        return txt, KB_BACK
+    except Exception as e:
+        return "❌ Erreur : " + str(e), KB_BACK
+
+
+def cmd_earth():
+    try:
+        r = requests.get("https://epic.gsfc.nasa.gov/api/natural", timeout=10).json()
+        if not r:
+            return "❌ Pas de donnees EPIC", KB_BACK
+        latest = r[-1]
+        date = latest["date"].split()[0].replace("-", "/")
+        img_name = latest["image"]
+        img_url = "https://epic.gsfc.nasa.gov/archive/natural/" + date + "/png/" + img_name + ".png"
+        caption = latest.get("caption", "")
+        txt = ("🌍 *La Terre vue de l espace*\n\n"
+               "📸 Satellite : DSCOVR (NASA)\n"
+               "📅 " + latest["date"] + "\n"
+               "📍 Distance : ~1.5 million km\n\n"
+               "_" + caption + "_")
+        kb = {"inline_keyboard": [
+            [{"text": "🔗 Voir en HD", "url": img_url}],
+            [{"text": "🔄 Actualiser", "callback_data": "earth"}],
+            [{"text": "◀️ Menu", "callback_data": "menu"}],
+        ]}
+        return ("PHOTO", img_url, txt, kb)
+    except Exception as e:
+        return "❌ Erreur : " + str(e), KB_BACK
+
+
+def cmd_solar():
+    try:
+        r = requests.get("https://services.swpc.noaa.gov/json/planetary_k_index_1m.json", timeout=10).json()
+        kp = float(r[-1]["kp_index"]) if r else 0
+    except Exception:
+        kp = None
+    level = "Calme" if kp is None or kp < 3 else "Actif" if kp < 5 else "Orage G1" if kp < 6 else "Orage G2+" if kp < 7 else "Orage G3+"
+    emoji = "🟢" if (kp or 0) < 3 else "🟡" if (kp or 0) < 5 else "🔴"
+    try:
+        flares = requests.get("https://services.swpc.noaa.gov/json/goes/primary/xray-flares-latest.json", timeout=10).json()
+        last_flare = flares[-1] if flares else None
+    except Exception:
+        last_flare = None
+    txt = "☀️ *Meteo spatiale*\n\n"
+    txt += emoji + " *Kp index* : " + str(kp) + "\n"
+    txt += "📊 Niveau : " + level + "\n\n"
+    if (kp or 0) >= 5:
+        txt += "🌟 *Aurores boreales possibles !*\n\n"
+    if last_flare:
+        txt += ("⚡ Derniere eruption :\n"
+                "   Classe : *" + str(last_flare.get("max_class", "?")) + "*\n"
+                "   Debut : " + str(last_flare.get("begin_time", "?"))[:16] + "\n")
+    txt += "\n[📊 Donnees NOAA](https://www.swpc.noaa.gov/)"
+    return txt, KB_BACK
+
+
+def cmd_multisat():
+    kb = {"inline_keyboard": [
+        [{"text": "🛰️ ISS", "callback_data": "sat_iss"},
+         {"text": "🔭 Hubble", "callback_data": "sat_hubble"}],
+        [{"text": "🐉 Tiangong", "callback_data": "sat_tiangong"},
+         {"text": "☁️ NOAA", "callback_data": "sat_noaa"}],
+        [{"text": "◀️ Menu", "callback_data": "menu"}],
+    ]}
+    return "🛰️ *Choisis un satellite*", kb
+
+
+def cmd_satellite(sat_key):
+    cfg = load_alarm()
+    lat = cfg.get("lat"); lon = cfg.get("lon")
+    if lat is None:
+        return "❌ Position non configuree", KB_BACK
+    try:
+        from iss_multisat import get_satellite_passes, az_to_cardinal
+        passes, info = get_satellite_passes(sat_key, lat, lon, hours=48)
+        if not passes:
+            return "❌ " + str(info), KB_BACK
+        lines = ["🛰️ *" + info + "* — " + str(len(passes)) + " passages\n"]
+        for i, p in enumerate(passes[:5], 1):
+            rise_c = az_to_cardinal(p["az_rise"]); set_c = az_to_cardinal(p["az_set"])
+            lines.append("*" + str(i) + ".* " + p["risetime"].strftime("%d/%m %H:%M") + " UTC\n"
+                        "   max " + str(round(p["max_elevation"])) + "deg | "
+                        + rise_c + "->" + set_c + " | "
+                        + str(round(p["duration_s"])) + "s")
+        return "\n".join(lines), KB_BACK
+    except Exception as e:
+        return "❌ Erreur : " + str(e), KB_BACK
+
+
+def cmd_ical():
+    cfg = load_alarm()
+    lat = cfg.get("lat"); lon = cfg.get("lon")
+    lieu = cfg.get("lieu", "Position")
+    if lat is None:
+        return "❌ Position non configuree", KB_BACK
+    try:
+        from iss_pass import get_next_passes
+        from iss_notify import export_ical
+        passes = get_next_passes(lat, lon, hours=168, min_elevation=0, verbose=False)
+        if not passes:
+            return "❌ Aucun passage dans les 7 jours", KB_BACK
+        f = export_ical(passes, lieu=lieu)
+        return ("DOC", f, "📅 " + str(len(passes)) + " passages (7 jours) - importe dans ton calendrier !"), KB_BACK
+    except Exception as e:
+        return "❌ Erreur : " + str(e), KB_BACK
+
+
+def cmd_quiz_start():
+    import random
+    qs = random.sample(QUIZ_QUESTIONS, 5)
+    QUIZ_STATE.write_text(json.dumps({"qs": qs, "idx": 0, "score": 0}))
+    return cmd_quiz_question("")
+
+
+def cmd_quiz_question(feedback):
+    state = json.loads(QUIZ_STATE.read_text())
+    idx = state["idx"]
+    if idx >= len(state["qs"]):
+        return cmd_quiz_end(feedback)
+    q = state["qs"][idx]
+    txt = (feedback + "\n\n" if feedback else "")
+    txt += "🎮 *Quiz spatial* (" + str(idx+1) + "/" + str(len(state["qs"])) + ")\n\n❓ " + q["q"]
+    kb = {"inline_keyboard": [
+        [{"text": "A. " + q["opts"][0], "callback_data": "quiz_0"}],
+        [{"text": "B. " + q["opts"][1], "callback_data": "quiz_1"}],
+        [{"text": "C. " + q["opts"][2], "callback_data": "quiz_2"}],
+    ]}
+    return txt, kb
+
+
+def cmd_quiz_answer(answer_idx):
+    state = json.loads(QUIZ_STATE.read_text())
+    idx = state["idx"]
+    q = state["qs"][idx]
+    correct = (answer_idx == q["ans"])
+    if correct:
+        state["score"] += 1
+    state["idx"] += 1
+    QUIZ_STATE.write_text(json.dumps(state))
+    feedback = "✅ Correct !" if correct else "❌ Rate. Reponse : *" + q["opts"][q["ans"]] + "*"
+    return cmd_quiz_question(feedback)
+
+
+def cmd_quiz_end(feedback):
+    state = json.loads(QUIZ_STATE.read_text())
+    score = state["score"]; total = len(state["qs"])
+    if score == total:
+        emoji = "🏆"; msg = "PARFAIT !"
+    elif score >= 3:
+        emoji = "🎉"; msg = "Bien joue !"
+    else:
+        emoji = "📚"; msg = "Continue a apprendre !"
+    txt = (feedback + "\n\n" if feedback else "")
+    txt += emoji + " *Quiz termine*\n\n*Score : " + str(score) + "/" + str(total) + "*\n" + msg
+    kb = {"inline_keyboard": [
+        [{"text": "🔁 Rejouer", "callback_data": "quiz"}],
+        [{"text": "◀️ Menu", "callback_data": "menu"}],
+    ]}
+    return txt, kb
+
+
+def cmd_stats():
+    try:
+        from iss_stats import stats_completes
+        s = stats_completes()
+        if "message" in s:
+            return "📊 " + s["message"], KB_BACK
+        txt = ("📊 *Vos statistiques*\n\n"
+               "👁️ Observations : *" + str(s["total_observations"]) + "*\n"
+               "   ✅ Vus : " + str(s["vus"]) + "\n"
+               "   ❌ Rates : " + str(s["rates"]) + "\n"
+               "   🎯 Taux : *" + str(s["taux_reussite"]) + "%*\n\n"
+               "🌍 Villes : " + str(len(s["villes_observees"])) + "\n")
+        for v, n in list(s["villes_observees"].items())[:3]:
+            txt += "   • " + v + " : " + str(n) + "\n"
+        txt += "\n🚀 Distance cumulee : *" + str(s["distance_cumulee_km"]) + " km*"
+        return txt, KB_BACK
+    except Exception as e:
+        return "❌ Erreur : " + str(e), KB_BACK
+
+
+
+def cmd_radio():
+    if iss_radio is None:
+        return "Module indisponible", KB_BACK
+    return iss_radio.infos_radio(load_alarm().get("lieu", "?")), KB_BACK
+
+
+def cmd_track():
+    if iss_groundtrack is None:
+        return "Module indisponible", KB_BACK
+    txt = iss_groundtrack.texte_trajectoire(90)
+    return txt, KB_BACK
+
+
+def cmd_report():
+    if iss_report is None:
+        return "Module indisponible", KB_BACK
+    try:
+        f = iss_report.generer_pdf()
+        return ("DOC", f, "Ton rapport MAP-CI")
+    except Exception as e:
+        return "Erreur : " + str(e), KB_BACK
+
+
+def cmd_live():
+    if iss_live is None:
+        return "Module indisponible", KB_BACK
+    return iss_live.texte_lives(), KB_BACK
+
+
+def cmd_kids():
+    if iss_kids is None:
+        return "Module indisponible", KB_BACK
+    kb = {"inline_keyboard": [
+        [{"text": "Un fait rigolo", "callback_data": "kids_fact"}],
+        [{"text": "Quiz enfant", "callback_data": "kids_quiz"}],
+        [{"text": "Ou est l ISS ?", "callback_data": "kids_iss"}],
+        [{"text": "Retour menu", "callback_data": "menu"}],
+    ]}
+    return iss_kids.message_bienvenue("ami"), kb
+
+
+def cmd_kids_fact():
+    if iss_kids is None:
+        return "Module indisponible", KB_BACK
+    txt = "*Le savais-tu ?*\n\n" + iss_kids.fait_aleatoire()
+    kb = {"inline_keyboard": [
+        [{"text": "Un autre !", "callback_data": "kids_fact"}],
+        [{"text": "Retour", "callback_data": "kids"}],
+    ]}
+    return txt, kb
+
+
+def cmd_ai_help():
+    txt = ("*Assistant conversationnel*\n\n"
+           "Tu peux parler naturellement au bot !\n\n"
+           "*Exemples :*\n"
+           "- Ou est l'ISS ?\n"
+           "- Quand passe l'ISS ce soir ?\n"
+           "- Il fait beau a Abidjan ?\n"
+           "- Montre-moi une photo de la Terre\n"
+           "- Fais-moi un quiz\n"
+           "- Mes statistiques d'observation\n"
+           "- Frequence radio ISS\n"
+           "- Aurores boreales ce soir ?\n\n"
+           "Envoie ton message directement !")
+    kb = {"inline_keyboard": [
+        [{"text": "Essayer", "callback_data": "iss"}],
+        [{"text": "Retour menu", "callback_data": "menu"}],
+    ]}
+    return txt, kb
+
+
+def handle_text(token, chat_id, text):
+    cmd = text.strip().lower().split()[0] if text.strip() else ""
+    if cmd in ("/start", "/menu", "/help", "/aide"):
+        txt, kb = cmd_menu()
+    elif cmd == "/status":
+        txt, kb = cmd_status()
+    elif cmd == "/passes":
+        txt, kb = cmd_passes()
+    elif cmd == "/iss":
+        txt, kb = cmd_iss()
+    elif cmd in ("/aujourdhui", "/jour"):
+        try:
+            from daily_report import build_report
+            txt, kb = build_report(), KB_BACK
+        except Exception as e:
+            txt, kb = "❌ " + str(e), KB_BACK
+    elif cmd == "/earth":
+        r = cmd_earth()
+        if isinstance(r, tuple) and len(r) == 4 and r[0] == "PHOTO":
+            _, url, caption, kb = r
+            api(token, "sendPhoto", {"chat_id": chat_id, "photo": url,
+                "caption": caption, "parse_mode": "Markdown",
+                "reply_markup": json.dumps(kb)})
+            return
+        txt, kb = r
+    elif cmd == "/solar":
+        txt, kb = cmd_solar()
+    elif cmd == "/stats":
+        txt, kb = cmd_stats()
+    elif cmd == "/quiz":
+        txt, kb = cmd_quiz_start()
+    else:
+        # Analyse NLP
+        if iss_nlp is not None:
+            intent, _ = iss_nlp.analyser(text)
+            if intent == "salut":
+                txt, kb = "👋 Salut ! Envoie /menu pour voir les options 🛰️", KB_MAIN
+            elif intent == "iss":
+                txt, kb = cmd_iss()
+            elif intent == "prochain":
+                txt, kb = cmd_countdown()
+            elif intent == "passes":
+                txt, kb = cmd_passes()
+            elif intent == "earth":
+                r = cmd_earth()
+                if isinstance(r, tuple) and len(r) == 4 and r[0] == "PHOTO":
+                    _, url, caption, kb = r
+                    api(token, "sendPhoto", {"chat_id": chat_id, "photo": url,
+                        "caption": caption, "parse_mode": "Markdown",
+                        "reply_markup": json.dumps(kb)})
+                    return
+                txt, kb = r
+            elif intent == "quiz":
+                txt, kb = cmd_quiz_start()
+            elif intent == "stats":
+                txt, kb = cmd_stats()
+            elif intent == "radio":
+                txt, kb = cmd_radio()
+            elif intent == "aurores":
+                txt, kb = cmd_solar()
+            elif intent == "aide":
+                txt, kb = cmd_ai_help()
+            elif intent == "bravo":
+                txt, kb = "😊 Merci ! N'hésite pas à demander autre chose.", KB_MAIN
+            else:
+                txt, kb = "❓ Je n'ai pas compris. Envoie /menu ou reformule.", KB_MAIN
+        else:
+            txt, kb = "❓ Commande inconnue. Envoie /menu 👇", KB_MAIN
+    send(token, chat_id, txt, keyboard=kb)
+
+
+def handle_callback(token, chat_id, msg_id, data):
+    if data == "menu":
+        txt, kb = cmd_menu()
+    elif data == "status":
+        txt, kb = cmd_status()
+    elif data == "passes":
+        txt, kb = cmd_passes()
+    elif data == "iss":
+        txt, kb = cmd_iss()
+    elif data == "countdown":
+        txt, kb = cmd_countdown()
+    elif data == "earth":
+        r = cmd_earth()
+        if isinstance(r, tuple) and len(r) == 4 and r[0] == "PHOTO":
+            _, url, caption, kb = r
+            api(token, "sendPhoto", {"chat_id": chat_id, "photo": url,
+                "caption": caption, "parse_mode": "Markdown",
+                "reply_markup": json.dumps(kb)})
+            return
+        txt, kb = r
+    elif data == "solar":
+        txt, kb = cmd_solar()
+    elif data == "multisat":
+        txt, kb = cmd_multisat()
+    elif data.startswith("sat_"):
+        txt, kb = cmd_satellite(data[4:])
+    elif data == "ical":
+        r = cmd_ical()
+        if isinstance(r, tuple) and len(r) == 3 and r[0] == "DOC":
+            _, filepath, caption = r
+            send_document(token, chat_id, filepath, caption)
+            return
+        txt, kb = r
+    elif data == "quiz":
+        txt, kb = cmd_quiz_start()
+    elif data.startswith("quiz_"):
+        try:
+            ans = int(data[5:])
+            txt, kb = cmd_quiz_answer(ans)
+        except Exception:
+            txt, kb = "❌", KB_BACK
+    elif data == "stats":
+        txt, kb = cmd_stats()
+    elif data == "radio":
+        txt, kb = cmd_radio()
+    elif data == "track":
+        txt, kb = cmd_track()
+    elif data == "report":
+        r = cmd_report()
+        if isinstance(r, tuple) and len(r) == 3 and r[0] == "DOC":
+            _, filepath, caption = r
+            send_document(token, chat_id, filepath, caption)
+            return
+        txt, kb = r
+    elif data == "live":
+        txt, kb = cmd_live()
+    elif data == "kids":
+        txt, kb = cmd_kids()
+    elif data == "kids_fact":
+        txt, kb = cmd_kids_fact()
+    elif data == "kids_quiz":
+        txt, kb = cmd_quiz_start()
+    elif data == "kids_iss":
+        txt, kb = cmd_iss()
+    elif data == "ai_help":
+        txt, kb = cmd_ai_help()
+    else:
+        txt, kb = "❓ Action inconnue", KB_BACK
+    edit(token, chat_id, msg_id, txt, keyboard=kb)
+
+
+def get_updates(token, offset=None):
+    try:
+        params = {"timeout": 30}
+        if offset:
+            params["offset"] = offset
+        r = requests.get("https://api.telegram.org/bot" + token + "/getUpdates",
+                        params=params, timeout=35)
+        return r.json().get("result", [])
+    except Exception:
+        return []
+
+
+def main():
+    cfg = load_tg()
+    if not cfg:
+        print("❌ Config Telegram manquante (option 30)")
+        return
+    token = cfg.get("token")
+    my_chat = str(cfg.get("chat_id"))
+    if not token or not my_chat:
+        print("❌ Token/chat_id manquant")
+        return
+
+    print("🤖 MAP-CI Bot V2 demarre (chat ..." + my_chat[-4:] + ")")
+    print("   Envoie /menu sur Telegram\n")
+
+    last_id = None
+    while True:
+        try:
+            updates = get_updates(token, offset=last_id)
+            for u in updates:
+                last_id = u["update_id"] + 1
+                if "callback_query" in u:
+                    cq = u["callback_query"]
+                    cid = str(cq["message"]["chat"]["id"])
+                    if cid != my_chat:
+                        continue
+                    mid = cq["message"]["message_id"]
+                    data = cq.get("data", "")
+                    print("[" + datetime.now().strftime("%H:%M:%S") + "] Callback : " + data)
+                    handle_callback(token, cid, mid, data)
+                    api(token, "answerCallbackQuery", {"callback_query_id": cq["id"]})
+                elif "message" in u:
+                    m = u["message"]
+                    cid = str(m["chat"]["id"])
+                    if cid != my_chat:
+                        continue
+                    text = m.get("text", "")
+                    if not text:
+                        continue
+                    print("[" + datetime.now().strftime("%H:%M:%S") + "] Text : " + text[:40])
+                    handle_text(token, cid, text)
+        except KeyboardInterrupt:
+            print("\n👋 Bot arrete.")
+            break
+        except Exception as e:
+            print("⚠️  " + str(e))
+            time.sleep(5)
+
+
+if __name__ == "__main__":
+    main()

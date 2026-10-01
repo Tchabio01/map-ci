@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Contact ISS — MAP-CI</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, system-ui, sans-serif; background: #0a0e27; color: #e0e0e0; }
+
+header { background: #151b3d; padding: 12px 16px; border-bottom: 2px solid #2a3a6b;
+         display: flex; align-items: center; gap: 12px; position: sticky; top: 0; z-index: 100; }
+header h1 { font-size: 1.1em; color: #4fc3f7; }
+header a { color: #4fc3f7; text-decoration: none; font-size: 0.9em; }
+
+.tabs { display: flex; gap: 4px; padding: 10px; background: #0f1533;
+       border-bottom: 1px solid #2a3a6b; overflow-x: auto; }
+.tab { padding: 8px 14px; background: #1a2350; border: 1px solid #2a3a6b;
+      color: #a0a0a0; border-radius: 8px; font-size: 0.8em; cursor: pointer;
+      white-space: nowrap; }
+.tab.active { background: #4fc3f7; color: #0a0e27; border-color: #4fc3f7; }
+
+.panel { display: none; padding: 14px; font-size: 0.9em; line-height: 1.7; }
+.panel.active { display: block; }
+
+.panel h2 { color: #4fc3f7; font-size: 1.1em; margin-bottom: 12px; }
+.panel h3 { color: #ffd54f; font-size: 1em; margin: 14px 0 8px; }
+.panel p { margin-bottom: 10px; }
+.panel code { background: #1a2350; padding: 2px 6px; border-radius: 4px;
+             color: #ffd54f; font-family: monospace; font-size: 0.9em; }
+.panel a { color: #4fc3f7; }
+.panel ul { padding-left: 20px; margin-bottom: 12px; }
+.panel li { margin-bottom: 4px; }
+
+.alert { background: #1a2350; border-left: 4px solid #ffd54f;
+        padding: 12px; border-radius: 6px; margin: 12px 0; font-size: 0.85em; }
+.alert.red { border-left-color: #e74c3c; }
+.alert.green { border-left-color: #4fc3f7; }
+
+.checklist { list-style: none; padding: 0; }
+.checklist li { padding: 10px; background: #151b3d; margin: 6px 0;
+               border-radius: 6px; border-left: 3px solid #4fc3f7;
+               display: flex; gap: 10px; align-items: center; cursor: pointer; }
+.checklist li input { width: 20px; height: 20px; accent-color: #4fc3f7; }
+.checklist li.done { opacity: 0.5; text-decoration: line-through; }
+</style>
+</head>
+<body>
+
+<header>
+  <a href="/">←</a>
+  <h1>📡 Contact ISS</h1>
+</header>
+
+<div class="tabs">
+  <button class="tab active" data-panel="intro">Intro</button>
+  <button class="tab" data-panel="aprs">APRS</button>
+  <button class="tab" data-panel="ariss">ARISS</button>
+  <button class="tab" data-panel="materiel">Matériel</button>
+  <button class="tab" data-panel="checklist">Checklist</button>
+</div>
+
+<div class="panel active" id="panel-intro">
+  <h2>📡 Contacter l'ISS par radio</h2>
+  <div class="alert red">
+    <b>⚠️ Important</b><br>
+    On ne peut <b>PAS appeler les astronautes</b> comme au téléphone.
+    Il existe 3 façons réelles de communiquer par radio.
+  </div>
+  <h3>1. 📨 APRS — Relais de messages</h3>
+  <p>L'ISS embarque un <b>digipeater APRS</b> qui relaie les paquets radio des amateurs.
+  Tu peux envoyer des messages quand l'ISS passe au-dessus de toi.</p>
+
+  <h3>2. 🎓 ARISS — Contact vocal programmé</h3>
+  <p>Des écoles et groupes peuvent candidater pour un <b>vrai contact de 10 min</b>
+  avec un astronaute. Processus de 6 à 12 mois.</p>
+
+  <h3>3. 🎧 Écoute passive</h3>
+  <p>Avec un simple WebSDR (radio en ligne gratuite), tu peux <b>écouter</b>
+  les contacts ARISS pendant les passages.</p>
+
+  <div class="alert green">
+    💡 <b>Tu veux écouter maintenant ?</b><br>
+    Va sur <a href="/radio">Radio ISS</a> → clique sur Twente WebSDR
+  </div>
+</div>
+
+<div class="panel" id="panel-aprs">
+  <h2>📨 APRS — Message via l'ISS</h2>
+  <div class="alert">
+    <b>Ce qu'il te faut</b>
+    <ul>
+      <li>📻 Radio VHF 2m</li>
+      <li>🎫 Licence radioamateur (obligatoire)</li>
+      <li>🖥️ TNC ou interface son</li>
+    </ul>
+  </div>
+  <h3>Fréquence et mode</h3>
+  <p><code>145.825 MHz</code> — AFSK 1200 bauds</p>
+
+  <h3>Procédure</h3>
+  <ol style="padding-left: 20px;">
+    <li>Configure ton path : <code>ARISS,SGATE,WIDE1-1</code></li>
+    <li>Adresse : <code>RS0ISS</code></li>
+    <li>Émets pendant un passage > 30° d'élévation</li>
+    <li>Compense le Doppler (± 3 kHz)</li>
+  </ol>
+
+  <h3>Solution mobile</h3>
+  <p>Smartphone + <b>APRSdroid</b> + TNC Bluetooth Mobilinkd = station portable.</p>
+
+  <div class="alert red">
+    ⚠️ L'astronaute ne lit PAS les messages APRS. C'est un relais automatique
+    pour positions et données météo.
+  </div>
+</div>
+
+<div class="panel" id="panel-ariss">
+  <h2>🎓 Contact ARISS — Le vrai échange vocal</h2>
+  <div class="alert green">
+    <b>C'est LE SEUL moyen d'avoir un vrai échange avec un astronaute !</b>
+  </div>
+
+  <h3>Qui peut candidater ?</h3>
+  <ul>
+    <li>Écoles primaires et secondaires</li>
+    <li>Universités</li>
+    <li>Musées / associations jeunesse</li>
+  </ul>
+
+  <h3>Délai</h3>
+  <p><b>8 à 12 mois</b> entre candidature et contact</p>
+
+  <h3>Format</h3>
+  <p>10-15 questions préparées par les élèves → astronaute répond en direct pendant 10 min</p>
+
+  <h3>Procédure</h3>
+  <ol style="padding-left: 20px;">
+    <li>Candidater sur <a href="https://www.ariss.org/apply.html" target="_blank">ariss.org/apply.html</a></li>
+    <li>Attente de sélection (plusieurs mois)</li>
+    <li>ARISS Europe/Amérique/Asie te contacte</li>
+    <li>Mise en place station sol (matériel assisté)</li>
+    <li>Contact le jour J pendant un passage ISS</li>
+  </ol>
+
+  <div class="alert">
+    💡 Le projet doit être <b>structuré et pédagogique</b>.
+    ARISS cherche à inspirer les jeunes vers les sciences.
+  </div>
+</div>
+
+<div class="panel" id="panel-materiel">
+  <h2>🛠️ Matériel nécessaire</h2>
+
+  <h3>Pour écouter seulement — 0 FCFA</h3>
+  <ul>
+    <li>📱 WebSDR gratuit (via <a href="/radio">page Radio</a>)</li>
+    <li>📻 Scanner VHF (~50 000 FCFA)</li>
+    <li>📡 Antenne fouet 2m (~15 000 FCFA)</li>
+  </ul>
+
+  <h3>Pour émettre APRS — ~500 000 FCFA</h3>
+  <ul>
+    <li>🎫 Licence radioamateur</li>
+    <li>📻 Émetteur VHF 2m 5-25W</li>
+    <li>📡 Antenne Yagi directive</li>
+    <li>🖥️ TNC Mobilinkd ou SignaLink</li>
+  </ul>
+
+  <h3>Pour SDR — ~45 000 FCFA</h3>
+  <ul>
+    <li>🔌 Dongle RTL-SDR</li>
+    <li>📡 Antenne QFH ou Yagi</li>
+    <li>🧑‍💻 SDR# / GQRX / SDRangel</li>
+  </ul>
+
+  <h3>Marques fiables</h3>
+  <ul>
+    <li>Yaesu FT-2980R</li>
+    <li>Icom IC-2730</li>
+    <li>RTL-SDR Blog V3</li>
+    <li>Arrow Antenna 146/437</li>
+  </ul>
+</div>
+
+<div class="panel" id="panel-checklist">
+  <h2>✅ Checklist contact ARISS</h2>
+  <p>Coche au fur et à mesure de ton projet.</p>
+  <ul class="checklist" id="checklist">
+    <li><input type="checkbox">Projet pédagogique rédigé (objectifs, questions)</li>
+    <li><input type="checkbox">Coordonnateur radioamateur identifié</li>
+    <li><input type="checkbox">Lieu avec accès ciel dégagé (horizon > 10°)</li>
+    <li><input type="checkbox">Autorisation de l'établissement obtenue</li>
+    <li><input type="checkbox">Financement prévu (matériel + déplacement)</li>
+    <li><input type="checkbox">Candidature envoyée sur ariss.org</li>
+    <li><input type="checkbox">Contact régional ARISS établi</li>
+    <li><input type="checkbox">Équipe radio formée (2-3 personnes)</li>
+    <li><input type="checkbox">Antennes et émetteurs testés</li>
+    <li><input type="checkbox">Répétition générale effectuée</li>
+    <li><input type="checkbox">Questions des élèves préparées (10-15)</li>
+    <li><input type="checkbox">Communication médiatique prévue</li>
+  </ul>
+  <p style="margin-top: 16px;" id="progress">0/12 complété</p>
+</div>
+
+<script>
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.onclick = () => {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+    tab.classList.add('active');
+    document.getElementById('panel-' + tab.dataset.panel).classList.add('active');
+  };
+});
+
+// Checklist persistante
+const checks = document.querySelectorAll('#checklist input');
+const saved = JSON.parse(localStorage.getItem('iss-checklist') || '{}');
+checks.forEach((c, i) => {
+  c.checked = saved[i] || false;
+  if (c.checked) c.parentElement.classList.add('done');
+  c.onchange = () => {
+    saved[i] = c.checked;
+    localStorage.setItem('iss-checklist', JSON.stringify(saved));
+    c.parentElement.classList.toggle('done', c.checked);
+    updateProgress();
+  };
+});
+
+function updateProgress() {
+  const total = checks.length;
+  const done = [...checks].filter(c => c.checked).length;
+  document.getElementById('progress').textContent = done + '/' + total + ' complété';
+}
+updateProgress();
+</script>
+
+</body>
+</html>
