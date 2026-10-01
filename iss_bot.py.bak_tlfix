@@ -509,27 +509,6 @@ def cmd_kids_fact():
         return "❌ " + str(e), KB_BACK
 
 
-def cmd_search_help():
-    return ("🔍 *Recherche globale*\n\n"
-            "Cherche dans :\n"
-            "• 📝 Historique\n"
-            "• 📌 Favoris\n"
-            "• 👁️ Observations\n"
-            "• 📋 Todos\n"
-            "• 📍 Positions\n\n"
-            "Envoie : `/find mot-cle`\n"
-            "_Exemple : /find abidjan_"), KB_BACK
-
-
-def cmd_search(query):
-    try:
-        import iss_search
-    except Exception as e:
-        return "❌ " + str(e), KB_BACK
-    results = iss_search.chercher(query, max_results=15)
-    return iss_search.format_resultats(results, query), KB_BACK
-
-
 def cmd_timelapse():
     try:
         import iss_timelapse
@@ -752,12 +731,6 @@ def handle_callback(token, chat_id, mid, data):
         edit(token, chat_id, mid, t, k)
         return
 
-    # Search
-    if data == "search":
-        t, k = cmd_search_help()
-        edit(token, chat_id, mid, t, k)
-        return
-
     # Timelapse
     if data == "timelapse":
         t, k = cmd_timelapse()
@@ -775,31 +748,30 @@ def handle_callback(token, chat_id, mid, data):
         except Exception:
             pass
         try:
-            result = cmd_timelapse_generate(n)
-            print("  [TL] Type : " + str(type(result)))
-            # Cas 1 : tuple VIDEO (3 elements)
-            if isinstance(result, tuple) and len(result) == 3 and result[0] == "VIDEO":
-                _, fp, cap = result
+            t, k = cmd_timelapse_generate(n)
+            print("  [TL] Type resultat : " + str(type(t)))
+            print("  [TL] Valeur : " + str(t)[:200])
+            if isinstance(t, tuple) and len(t) >= 3 and t[0] == "VIDEO":
+                _, fp, cap = t[0], t[1], t[2]
                 print("  [TL] Fichier : " + str(fp))
                 import os
                 if not os.path.exists(fp):
-                    edit(token, chat_id, mid, "❌ Fichier introuvable", KB_BACK)
+                    print("  [TL] ERREUR : fichier introuvable !")
+                    edit(token, chat_id, mid, "❌ Fichier introuvable : " + str(fp), KB_BACK)
                     return
                 size = os.path.getsize(fp)
-                print("  [TL] Taille : " + str(size))
+                print("  [TL] Taille : " + str(size) + " octets")
+                if size < 1000:
+                    edit(token, chat_id, mid, "❌ Fichier trop petit (" + str(size) + " o)", KB_BACK)
+                    return
                 r = send_doc(token, chat_id, fp, cap)
                 print("  [TL] Envoi : " + str(r))
                 if not r.get("ok"):
-                    desc = r.get("description", r.get("error", "?"))
+                    desc = r.get("description", r.get("error", "inconnu"))
                     edit(token, chat_id, mid, "❌ Envoi echoue : " + str(desc)[:150], KB_BACK)
                 return
-            # Cas 2 : tuple (txt, kb)
-            elif isinstance(result, tuple) and len(result) == 2:
-                t, k = result
-                edit(token, chat_id, mid, t, k)
-                return
             else:
-                edit(token, chat_id, mid, str(result)[:300], KB_BACK)
+                edit(token, chat_id, mid, str(t)[:300], KB_BACK)
         except Exception as e:
             print("  [TL] EXCEPTION : " + str(e))
             import traceback
@@ -897,24 +869,14 @@ def handle_voice(token, chat_id, file_id):
 
 def handle_text(token, chat_id, text):
     state = load_state()
-
-    # Si une commande est en attente MAIS que l'utilisateur envoie une NOUVELLE commande (/xxx)
-    # on annule la commande en attente
     if "pending_cmd" in state:
-        if text.strip().startswith("/"):
-            state.pop("pending_cmd", None)
-            save_state(state)
-            print("  [PENDING] Annule car nouvelle commande")
-        else:
-            # C'est bien un parametre pour la commande en attente
-            code = state["pending_cmd"]
-            state.pop("pending_cmd", None)
-            save_state(state)
-            params = text.split(",") if "," in text else text.split()
-            params = [x.strip() for x in params]
-            t, k = cmd_term_exec(code, params)
-            send(token, chat_id, t, k)
-            return
+        code = state["pending_cmd"]
+        state.pop("pending_cmd", None)
+        save_state(state)
+        params = text.split()
+        t, k = cmd_term_exec(code, params)
+        send(token, chat_id, t, k)
+        return
 
     cmd = text.strip().lower().split()[0] if text.strip() else ""
 
@@ -932,15 +894,6 @@ def handle_text(token, chat_id, text):
             t, k = cmd_ai_question(q)
         except Exception as e:
             t, k = "❌ " + str(e), KB_BACK
-        send(token, chat_id, t, k)
-        return
-
-    if cmd in ("/find", "/cherche", "/search"):
-        if len(text.split()) > 1:
-            q = text.split(maxsplit=1)[1]
-            t, k = cmd_search(q)
-        else:
-            t, k = cmd_search_help()
         send(token, chat_id, t, k)
         return
 

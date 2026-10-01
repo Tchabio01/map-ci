@@ -897,24 +897,14 @@ def handle_voice(token, chat_id, file_id):
 
 def handle_text(token, chat_id, text):
     state = load_state()
-
-    # Si une commande est en attente MAIS que l'utilisateur envoie une NOUVELLE commande (/xxx)
-    # on annule la commande en attente
     if "pending_cmd" in state:
-        if text.strip().startswith("/"):
-            state.pop("pending_cmd", None)
-            save_state(state)
-            print("  [PENDING] Annule car nouvelle commande")
-        else:
-            # C'est bien un parametre pour la commande en attente
-            code = state["pending_cmd"]
-            state.pop("pending_cmd", None)
-            save_state(state)
-            params = text.split(",") if "," in text else text.split()
-            params = [x.strip() for x in params]
-            t, k = cmd_term_exec(code, params)
-            send(token, chat_id, t, k)
-            return
+        code = state["pending_cmd"]
+        state.pop("pending_cmd", None)
+        save_state(state)
+        params = text.split()
+        t, k = cmd_term_exec(code, params)
+        send(token, chat_id, t, k)
+        return
 
     cmd = text.strip().lower().split()[0] if text.strip() else ""
 

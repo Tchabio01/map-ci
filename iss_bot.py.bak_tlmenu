@@ -125,8 +125,6 @@ KB_MAIN = {"inline_keyboard": [
      {"text": "🤖 IA conversationnelle", "callback_data": "ai_help"}],
     [{"text": "⚙️ Préférences", "callback_data": "prefs"},
      {"text": "🖥️ Menu terminal", "callback_data": "term_page_0"}],
-    [{"text": "🎬 Timelapse ISS", "callback_data": "timelapse"},
-     {"text": "🔍 Recherche", "callback_data": "search"}],
     [{"text": "📝 Todo", "url": "http://127.0.0.1:8080/todo"},
      {"text": "🌐 Interface Web", "url": "http://127.0.0.1:8080/"}],
 ]}
@@ -509,61 +507,6 @@ def cmd_kids_fact():
         return "❌ " + str(e), KB_BACK
 
 
-def cmd_search_help():
-    return ("🔍 *Recherche globale*\n\n"
-            "Cherche dans :\n"
-            "• 📝 Historique\n"
-            "• 📌 Favoris\n"
-            "• 👁️ Observations\n"
-            "• 📋 Todos\n"
-            "• 📍 Positions\n\n"
-            "Envoie : `/find mot-cle`\n"
-            "_Exemple : /find abidjan_"), KB_BACK
-
-
-def cmd_search(query):
-    try:
-        import iss_search
-    except Exception as e:
-        return "❌ " + str(e), KB_BACK
-    results = iss_search.chercher(query, max_results=15)
-    return iss_search.format_resultats(results, query), KB_BACK
-
-
-def cmd_timelapse():
-    try:
-        import iss_timelapse
-    except Exception as e:
-        return "❌ " + str(e), KB_BACK
-    if not iss_timelapse.has_ffmpeg():
-        return "❌ Installe ffmpeg : `pkg install ffmpeg -y`", KB_BACK
-    return ("🎬 *Timelapse ISS*\n\n"
-            "Genere une video de la Terre vue de l'espace\n"
-            "avec les images NASA EPIC.\n\n"
-            "Choisis le nombre d'images :\n\n"
-            "_10 images = ~30 sec de generation_"), {
-        "inline_keyboard": [
-            [{"text": "10 images (~30s)", "callback_data": "tl_10"}],
-            [{"text": "◀️ Menu", "callback_data": "menu"}],
-        ]
-    }
-
-
-def cmd_timelapse_generate(n):
-    try:
-        import iss_timelapse
-    except Exception as e:
-        return "❌ " + str(e), KB_BACK
-    try:
-        session = iss_timelapse.capture_sequence(n=n, interval=2)
-        video, err = iss_timelapse.assembler_video(session, fps=6)
-        if err or not video:
-            return "❌ " + (err or "echec"), KB_BACK
-        return ("VIDEO", video, "🎬 Timelapse ISS (" + str(n) + " frames)")
-    except Exception as e:
-        return "❌ " + str(e), KB_BACK
-
-
 def cmd_ai_chat_help():
     try:
         import iss_ai
@@ -752,61 +695,6 @@ def handle_callback(token, chat_id, mid, data):
         edit(token, chat_id, mid, t, k)
         return
 
-    # Search
-    if data == "search":
-        t, k = cmd_search_help()
-        edit(token, chat_id, mid, t, k)
-        return
-
-    # Timelapse
-    if data == "timelapse":
-        t, k = cmd_timelapse()
-        edit(token, chat_id, mid, t, k)
-        return
-
-    if data.startswith("tl_"):
-        try:
-            n = int(data[3:])
-        except Exception:
-            n = 10
-        print("  [TL] Generation " + str(n) + " frames...")
-        try:
-            edit(token, chat_id, mid, "🎬 Generation en cours...\n\n" + str(n) + " images. Patiente ~30 sec.", KB_BACK)
-        except Exception:
-            pass
-        try:
-            result = cmd_timelapse_generate(n)
-            print("  [TL] Type : " + str(type(result)))
-            # Cas 1 : tuple VIDEO (3 elements)
-            if isinstance(result, tuple) and len(result) == 3 and result[0] == "VIDEO":
-                _, fp, cap = result
-                print("  [TL] Fichier : " + str(fp))
-                import os
-                if not os.path.exists(fp):
-                    edit(token, chat_id, mid, "❌ Fichier introuvable", KB_BACK)
-                    return
-                size = os.path.getsize(fp)
-                print("  [TL] Taille : " + str(size))
-                r = send_doc(token, chat_id, fp, cap)
-                print("  [TL] Envoi : " + str(r))
-                if not r.get("ok"):
-                    desc = r.get("description", r.get("error", "?"))
-                    edit(token, chat_id, mid, "❌ Envoi echoue : " + str(desc)[:150], KB_BACK)
-                return
-            # Cas 2 : tuple (txt, kb)
-            elif isinstance(result, tuple) and len(result) == 2:
-                t, k = result
-                edit(token, chat_id, mid, t, k)
-                return
-            else:
-                edit(token, chat_id, mid, str(result)[:300], KB_BACK)
-        except Exception as e:
-            print("  [TL] EXCEPTION : " + str(e))
-            import traceback
-            traceback.print_exc()
-            edit(token, chat_id, mid, "❌ " + str(e)[:200], KB_BACK)
-        return
-
     # Dispatch normal
     if data in CALLBACKS:
         t, k = CALLBACKS[data]()
@@ -897,24 +785,14 @@ def handle_voice(token, chat_id, file_id):
 
 def handle_text(token, chat_id, text):
     state = load_state()
-
-    # Si une commande est en attente MAIS que l'utilisateur envoie une NOUVELLE commande (/xxx)
-    # on annule la commande en attente
     if "pending_cmd" in state:
-        if text.strip().startswith("/"):
-            state.pop("pending_cmd", None)
-            save_state(state)
-            print("  [PENDING] Annule car nouvelle commande")
-        else:
-            # C'est bien un parametre pour la commande en attente
-            code = state["pending_cmd"]
-            state.pop("pending_cmd", None)
-            save_state(state)
-            params = text.split(",") if "," in text else text.split()
-            params = [x.strip() for x in params]
-            t, k = cmd_term_exec(code, params)
-            send(token, chat_id, t, k)
-            return
+        code = state["pending_cmd"]
+        state.pop("pending_cmd", None)
+        save_state(state)
+        params = text.split()
+        t, k = cmd_term_exec(code, params)
+        send(token, chat_id, t, k)
+        return
 
     cmd = text.strip().lower().split()[0] if text.strip() else ""
 
@@ -932,15 +810,6 @@ def handle_text(token, chat_id, text):
             t, k = cmd_ai_question(q)
         except Exception as e:
             t, k = "❌ " + str(e), KB_BACK
-        send(token, chat_id, t, k)
-        return
-
-    if cmd in ("/find", "/cherche", "/search"):
-        if len(text.split()) > 1:
-            q = text.split(maxsplit=1)[1]
-            t, k = cmd_search(q)
-        else:
-            t, k = cmd_search_help()
         send(token, chat_id, t, k)
         return
 
